@@ -1,0 +1,47 @@
+/* 1. Tailwind v4 Import - This replaces the old @tailwind base/components/utilities */
+@import "tailwindcss";
+
+/* 2. Core Layout Reset */
+:root {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  color-scheme: dark light;
+}
+
+html, body, #root {
+  background-color: #09090b; /* Keeps it dark during load */
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+/* 3. Smooth Transitions (Required for your Dark/Light mode toggle) */
+* {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 300ms;
+}
+
+/* 4. Custom Scrollbar for the Sidebar & Chat Area */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.2);
+  border-radius: 20px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.4);
+}
+
+/* 5. Custom Glow Classes (For that premium AI look) */
+.bg-glow {
+  background: radial-gradient(circle at center, rgba(79, 70, 229, 0.15) 0%, transparent 70%);
+}
