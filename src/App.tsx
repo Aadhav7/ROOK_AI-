@@ -1,26 +1,31 @@
 import { type FormEvent, type ReactNode, useRef, useState } from 'react';
 import {
   Send, Bot, User, Moon, Sun, Plus,
-  Settings, LogOut, Search, Sparkles,
-  Paperclip, FileText, Clock, Palette, HelpCircle, Loader2, Mail, ShieldCheck,
-  Image as ImageIcon, Wand2, Database, Globe2, BookOpen, BadgeCheck, FileImage
+  LogOut, Sparkles,
+  Paperclip, Palette, Loader2, Mail, ShieldCheck,
+  Image as ImageIcon, Wand2, Globe2, BookOpen, BadgeCheck, Phone, X
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 const API_BASE_URL = import.meta.env.VITE_ROOK_API_URL || '/api';
 const TOKEN_KEY = 'rook_ai_token';
-const EMAIL_KEY = 'rook_ai_email';
+const CONTACT_KEY = 'rook_ai_contact';
 const PROFILE_KEY = 'rook_ai_profile';
 
 type Message = {
   role: 'user' | 'assistant';
   content: string;
   time: string;
+  imageUrl?: string;
+  model?: string;
 };
 
 type UserSession = {
-  email: string;
+  email?: string;
+  phone?: string;
+  userId?: string;
+  authChannel?: 'email' | 'sms';
   token: string;
 };
 
@@ -32,12 +37,6 @@ type UserProfile = {
 };
 
 type ChatMode = 'documents' | 'general';
-
-type GeneratedImage = {
-  imageUrl: string;
-  text: string;
-  model: string;
-};
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -75,20 +74,20 @@ async function readApiResponse(response: Response) {
 
 export default function RookAI() {
   const savedToken = localStorage.getItem(TOKEN_KEY);
-  const savedEmail = localStorage.getItem(EMAIL_KEY);
+  const savedContact = localStorage.getItem(CONTACT_KEY);
   const savedProfile = parseStoredProfile(localStorage.getItem(PROFILE_KEY));
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [user, setUser] = useState<UserSession | null>(
-    savedToken && savedEmail ? { token: savedToken, email: savedEmail } : null
+    savedToken && savedContact ? { token: savedToken, email: savedContact.includes('@') ? savedContact : undefined, phone: savedContact.includes('@') ? undefined : savedContact } : null
   );
   const [profile, setProfile] = useState<UserProfile | null>(savedProfile);
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
       content: savedProfile
-        ? `Hey ${savedProfile.name}! 😊 I’m ready. Ask me anything, or upload a file when you want document answers.`
-        : 'Upload a PDF, DOCX, TXT, or other supported file, then ask me questions about it.',
+        ? `Hey ${savedProfile.name}! I am ready. Ask me anything, upload a file, or describe a study visual you want.`
+        : 'Explore Rook AI freely. When you click the prompt bar or upload a file, I will ask for your details and verification.',
       time: now(),
     },
   ]);
@@ -97,10 +96,9 @@ export default function RookAI() {
   const [isSending, setIsSending] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [chatMode, setChatMode] = useState<ChatMode>('documents');
-  const [imagePrompt, setImagePrompt] = useState('');
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
   const [referenceImageName, setReferenceImageName] = useState('');
-  const [generatedImage, setGeneratedImage] = useState<GeneratedImage | null>(null);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [status, setStatus] = useState('Connected through local backend');
 
@@ -117,6 +115,7 @@ export default function RookAI() {
   };
 
   const authHeaders: Record<string, string> = user ? { Authorization: `Bearer ${user.token}` } : {};
+  const isVerified = Boolean(user && profile);
 
   const readReferenceImage = (file: File) => {
     const reader = new FileReader();
@@ -129,51 +128,36 @@ export default function RookAI() {
 
   const signOut = () => {
     localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(EMAIL_KEY);
+    localStorage.removeItem(CONTACT_KEY);
     localStorage.removeItem(PROFILE_KEY);
     setProfile(null);
     setUser(null);
-  };
-
-  const saveProfile = async (nextProfile: UserProfile) => {
-    if (!user) return;
-
-    const response = await fetch(`${API_BASE_URL}/profile`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders },
-      body: JSON.stringify(nextProfile),
-    });
-    const data = await readApiResponse(response);
-
-    if (response.status === 401) {
-      signOut();
-      throw new Error('Your session expired after the backend restarted. Please login again.');
-    }
-
-    if (!response.ok) {
-      throw new Error(data.error || 'Could not save your profile.');
-    }
-
-    const saved = data.profile || nextProfile;
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(saved));
-    setProfile(saved);
-    setMessages([{
-      role: 'assistant',
-      content: `Hey ${saved.name}! 😊 Nice to meet you. I’ll keep things friendly and useful. Ask me anything, or switch to Docs when you want answers from uploaded files.`,
-      time: now(),
-    }]);
   };
 
   const sendMessage = async (event?: FormEvent) => {
     event?.preventDefault();
     const question = input.trim();
 
-    if (!question || isSending || !user) return;
+    if (!question || isSending) return;
+    if (!isVerified) {
+      setIsAuthOpen(true);
+      return;
+    }
 
     setInput('');
+    setMessages(prev => [...prev, { role: 'user', content: question, time: now() }]);
+
+    const imagePrompt = question.replace(/^\/(image|chart|graph|diagram|visual|draw|sketch|flowchart|mindmap)\s*/i, '').trim();
+    const wantsImage = /^\/(image|chart|graph|diagram|visual|draw|sketch|flowchart|mindmap)\b/i.test(question)
+      || /\b(draw|sketch|design|generate|create|make|visualize|plot|map)\b.*\b(image|chart|graph|diagram|visual|infographic|architecture|flowchart|mind\s*map|timeline|table|layers?|tiers?|cycle|process|model)\b/i.test(question)
+      || /\b(chart|graph|diagram|infographic|architecture|flowchart|mind\s*map|timeline|layers?|tiers?)\b.*\b(about|for|of|showing|example|structure|model)\b/i.test(question);
+    if (wantsImage && imagePrompt) {
+      await generateImageFromPrompt(imagePrompt);
+      return;
+    }
+
     setIsSending(true);
     setStatus(chatMode === 'documents' ? 'Searching embedded documents...' : 'Thinking with general chat...');
-    setMessages(prev => [...prev, { role: 'user', content: question, time: now() }]);
 
     try {
       const response = await fetch(`${API_BASE_URL}/chat`, {
@@ -198,7 +182,7 @@ export default function RookAI() {
       setMessages(prev => [...prev, {
         role: 'assistant',
         content: chatMode === 'general'
-          ? `Sorry, my bad 😅 I could not reach the general chat engine: ${errorMessage}`
+          ? `Sorry, my bad. I could not reach the general chat engine: ${errorMessage}`
           : `I could not reach the document brain: ${errorMessage}`,
         time: now(),
       }]);
@@ -208,21 +192,26 @@ export default function RookAI() {
     }
   };
 
-  const generateImage = async (event: FormEvent) => {
-    event.preventDefault();
-    const prompt = imagePrompt.trim();
-
-    if (!prompt || isGeneratingImage || !user) return;
+  const generateImageFromPrompt = async (prompt: string) => {
+    if (!prompt || isGeneratingImage || !isVerified) {
+      if (!isVerified) setIsAuthOpen(true);
+      return;
+    }
 
     setIsGeneratingImage(true);
-    setGeneratedImage(null);
     setStatus('Generating image with Nano Banana...');
 
     try {
       const response = await fetch(`${API_BASE_URL}/images/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ prompt, referenceImage }),
+        body: JSON.stringify({
+          prompt,
+          referenceImage,
+          mode: chatMode,
+          profile,
+          useWorkspaceContext: chatMode === 'documents',
+        }),
       });
       const data = await readApiResponse(response);
 
@@ -230,21 +219,28 @@ export default function RookAI() {
         throw new Error(data.error || 'Image generation failed.');
       }
 
-      setGeneratedImage({
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: data.text || 'Image generated successfully.',
         imageUrl: data.imageUrl,
-        text: data.text,
         model: data.model,
-      });
+        time: now(),
+      }]);
       setStatus('Image generated');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Image generation failed.');
+      const errorMessage = error instanceof Error ? error.message : 'Image generation failed.';
+      setMessages(prev => [...prev, { role: 'assistant', content: errorMessage, time: now() }]);
+      setStatus(errorMessage);
     } finally {
       setIsGeneratingImage(false);
     }
   };
 
   const uploadFile = async (file: File) => {
-    if (!user) return;
+    if (!isVerified) {
+      setIsAuthOpen(true);
+      return;
+    }
 
     setIsUploading(true);
     setStatus(`Uploading ${file.name}...`);
@@ -289,23 +285,27 @@ export default function RookAI() {
     }
   };
 
-  if (!user) {
-    return (
-      <LoginScreen
-        isDark={isDark}
-        onToggleTheme={() => setIsDark(prev => !prev)}
-        onVerified={(session) => {
-          localStorage.setItem(TOKEN_KEY, session.token);
-          localStorage.setItem(EMAIL_KEY, session.email);
-          setUser(session);
-        }}
-      />
-    );
-  }
-
   return (
     <div className={cn("flex h-screen w-full font-sans transition-colors duration-500", theme.app)}>
-      {!profile && <ProfileModal isDark={isDark} email={user.email} onSave={saveProfile} />}
+      {isAuthOpen && !isVerified && (
+        <LoginScreen
+          isDark={isDark}
+          onClose={() => setIsAuthOpen(false)}
+          onVerified={(session, nextProfile) => {
+            localStorage.setItem(TOKEN_KEY, session.token);
+            localStorage.setItem(CONTACT_KEY, session.email || session.phone || session.userId || '');
+            localStorage.setItem(PROFILE_KEY, JSON.stringify(nextProfile));
+            setUser(session);
+            setProfile(nextProfile);
+            setIsAuthOpen(false);
+            setMessages([{
+              role: 'assistant',
+              content: `Hey ${nextProfile.name}! You are verified now. Ask me anything, upload a file, or ask for a study visual.`,
+              time: now(),
+            }]);
+          }}
+        />
+      )}
       <aside className={cn("w-72 flex flex-col p-4 border-r transition-all", theme.sidebar)}>
         <div className="flex items-center justify-between mb-6 px-2">
           <div className="flex items-center gap-2">
@@ -323,23 +323,14 @@ export default function RookAI() {
           <Plus size={18} /> New Chat
         </button>
 
-        <div className="relative mb-6">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
-          <input
-            className={cn("w-full pl-10 pr-4 py-2 rounded-xl text-sm border focus:outline-none transition-all", theme.input)}
-            placeholder="Search conversations..."
-          />
-        </div>
-
         <div className="flex-1 overflow-y-auto space-y-1 custom-scrollbar">
           <p className={cn("text-[10px] font-bold px-2 uppercase tracking-widest mb-2 flex items-center gap-2", theme.muted)}>
-            <Clock size={12}/> Workspace
+            <Sparkles size={12}/> Workspace
           </p>
           {[
             { label: 'Document Q&A', icon: <BookOpen size={16} /> },
             { label: 'General questions', icon: <Globe2 size={16} /> },
             { label: 'Nano Banana images', icon: <Wand2 size={16} /> },
-            { label: 'MongoDB activity', icon: <Database size={16} /> },
           ].map((item, i) => (
             <div key={item.label} className={cn("group flex items-center gap-3 p-3 rounded-xl transition-all",
               i === 0 ? (isDark ? "bg-indigo-500/10 border border-indigo-500/20" : "bg-indigo-50 border border-indigo-100") : theme.navHover)}>
@@ -347,7 +338,7 @@ export default function RookAI() {
               <div className="flex-1 truncate">
                 <p className="text-sm font-medium">{item.label}</p>
                 <p className={cn("text-[11px] truncate", theme.muted)}>
-                  {i === 0 ? 'AnythingLLM workspace: my-workspace' : i === 1 ? 'Ask anything after login' : i === 2 ? 'Gemini image model ready by API key' : 'Users and actions captured'}
+                  {i === 0 ? 'Ask from uploaded study files' : i === 1 ? 'Everyday and research help' : 'Images, charts, and graphs'}
                 </p>
               </div>
             </div>
@@ -361,7 +352,7 @@ export default function RookAI() {
             <button
               className="w-full py-2 bg-indigo-600 text-white text-xs rounded-lg font-bold hover:bg-indigo-500 transition-all disabled:cursor-not-allowed disabled:opacity-60"
               disabled={isUploading}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => isVerified ? fileInputRef.current?.click() : setIsAuthOpen(true)}
             >
               {isUploading ? 'Uploading...' : 'Upload file'}
             </button>
@@ -370,10 +361,12 @@ export default function RookAI() {
         </div>
 
         <div className={cn("mt-6 pt-4 border-t space-y-1", isDark ? "border-zinc-800" : "border-slate-200")}>
-          <NavItem icon={<Settings size={18}/>} label="Settings" theme={theme} />
           <NavItem icon={<Palette size={18}/>} label="Appearance" onClick={() => setIsDark(!isDark)} theme={theme} />
-          <NavItem icon={<HelpCircle size={18}/>} label="Help & Support" theme={theme} />
-          <NavItem icon={<LogOut size={18}/>} label="Log out" className="text-red-500" onClick={signOut} theme={theme} />
+          {isVerified ? (
+            <NavItem icon={<LogOut size={18}/>} label="Log out" className="text-red-500" onClick={signOut} theme={theme} />
+          ) : (
+            <NavItem icon={<ShieldCheck size={18}/>} label="Sign in" onClick={() => setIsAuthOpen(true)} theme={theme} />
+          )}
         </div>
       </aside>
 
@@ -404,8 +397,8 @@ export default function RookAI() {
               </button>
             </div>
             <div className={cn("hidden sm:block text-right text-xs", theme.muted)}>
-              <p className="font-medium">{profile?.name || user.email}</p>
-              <p className="inline-flex items-center justify-end gap-1"><BadgeCheck size={12} /> Free access</p>
+              <p className="font-medium">{profile?.name || 'Guest explorer'}</p>
+              <p className="inline-flex items-center justify-end gap-1"><BadgeCheck size={12} /> {isVerified ? 'Verified' : 'Explore mode'}</p>
             </div>
             <button onClick={() => setIsDark(!isDark)} className={cn("p-2 rounded-full transition-all", theme.navHover)} aria-label="Toggle theme">
               {isDark ? <Sun size={18} /> : <Moon size={18} />}
@@ -424,7 +417,11 @@ export default function RookAI() {
                 <div className={cn("space-y-1", msg.role === 'user' ? "items-end" : "items-start")}>
                   <div className={cn("p-4 rounded-3xl shadow-xl border",
                     msg.role === 'user' ? "bg-indigo-600 text-white border-indigo-500 rounded-tr-none" : `${theme.assistantBubble} rounded-tl-none`)}>
+                    {msg.imageUrl && (
+                      <img src={msg.imageUrl} alt="Generated study visual" className="mb-3 max-h-80 w-full rounded-2xl object-contain" />
+                    )}
                     <p className="text-[14px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                    {msg.model && <p className="mt-3 text-[10px] font-bold uppercase tracking-widest text-fuchsia-500">{msg.model}</p>}
                   </div>
                   <p className={cn("text-[10px] px-2", theme.muted)}>{msg.time}</p>
                 </div>
@@ -440,60 +437,6 @@ export default function RookAI() {
         </div>
 
         <div className="p-8 pt-0">
-          <form onSubmit={generateImage} className={cn("max-w-4xl mx-auto mb-4 rounded-2xl p-4 border", theme.panel)}>
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-              <div className="flex min-w-0 flex-1 items-center gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-fuchsia-600 text-white">
-                  <Wand2 size={18} />
-                </div>
-                <input
-                  className="min-w-0 flex-1 bg-transparent text-sm outline-none"
-                  value={imagePrompt}
-                  onChange={event => setImagePrompt(event.target.value)}
-                  placeholder="Generate an image with Nano Banana..."
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  ref={imageInputRef}
-                  className="hidden"
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={event => {
-                    const file = event.target.files?.[0];
-                    if (file) readReferenceImage(file);
-                  }}
-                />
-                <button
-                  type="button"
-                  className={cn("flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition", isDark ? "border-zinc-800 hover:bg-zinc-800" : "border-slate-200 hover:bg-slate-100")}
-                  onClick={() => imageInputRef.current?.click()}
-                >
-                  <FileImage size={15} />
-                  {referenceImageName || 'Reference'}
-                </button>
-                <button
-                  type="submit"
-                  disabled={isGeneratingImage || !imagePrompt.trim()}
-                  className="flex items-center gap-2 rounded-xl bg-fuchsia-600 px-4 py-2 text-xs font-bold text-white hover:bg-fuchsia-500 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isGeneratingImage ? <Loader2 size={15} className="animate-spin" /> : <ImageIcon size={15} />}
-                  Generate
-                </button>
-              </div>
-            </div>
-            {generatedImage && (
-              <div className={cn("mt-4 grid gap-4 rounded-xl border p-3 md:grid-cols-[180px_1fr]", isDark ? "border-zinc-800 bg-zinc-950/60" : "border-slate-200 bg-slate-50")}>
-                <img src={generatedImage.imageUrl} alt="Generated result" className="h-44 w-full rounded-lg object-cover" />
-                <div className="flex flex-col justify-center">
-                  <p className="text-sm font-semibold">Generated image ready</p>
-                  <p className={cn("mt-1 text-xs leading-5", theme.muted)}>{generatedImage.text}</p>
-                  <p className="mt-3 text-[11px] font-bold uppercase tracking-widest text-fuchsia-500">{generatedImage.model}</p>
-                </div>
-              </div>
-            )}
-          </form>
-
           <form onSubmit={sendMessage} className={cn("max-w-4xl mx-auto rounded-[32px] p-2 transition-all shadow-2xl border backdrop-blur-xl", theme.panel)}>
             <div className="flex items-center gap-2 px-4 py-2">
               <input
@@ -506,11 +449,21 @@ export default function RookAI() {
                   if (file) void uploadFile(file);
                 }}
               />
+              <input
+                ref={imageInputRef}
+                className="hidden"
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={event => {
+                  const file = event.target.files?.[0];
+                  if (file) readReferenceImage(file);
+                }}
+              />
               <button
                 type="button"
                 className="p-2 text-zinc-500 hover:text-indigo-500 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={isUploading}
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => isVerified ? fileInputRef.current?.click() : setIsAuthOpen(true)}
                 aria-label="Upload document"
               >
                 {isUploading ? <Loader2 size={20} className="animate-spin"/> : <Paperclip size={20}/>}
@@ -518,17 +471,29 @@ export default function RookAI() {
               <button
                 type="button"
                 className="p-2 text-zinc-500 hover:text-fuchsia-500 transition-colors"
-                onClick={() => imageInputRef.current?.click()}
+                onClick={() => isVerified ? imageInputRef.current?.click() : setIsAuthOpen(true)}
                 aria-label="Attach image reference"
               >
                 <ImageIcon size={20}/>
               </button>
-              <FileText size={18} className="text-zinc-500" />
+              <button
+                type="button"
+                className="hidden sm:flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-semibold text-fuchsia-500"
+                onClick={() => setInput(prev => prev.trim() ? prev : '/image ')}
+              >
+                <Wand2 size={14} /> Nano Banana
+              </button>
               <input
                 className="flex-1 bg-transparent border-none outline-none text-[15px] px-2"
-                placeholder={chatMode === 'documents' ? 'Ask about uploaded files...' : 'Ask any random question...'}
+                placeholder={chatMode === 'documents' ? 'Ask about files, key points, charts, or images...' : 'Ask anything, or describe a study visual...'}
                 value={input}
                 onChange={event => setInput(event.target.value)}
+                onFocus={() => {
+                  if (!isVerified) setIsAuthOpen(true);
+                }}
+                onClick={() => {
+                  if (!isVerified) setIsAuthOpen(true);
+                }}
               />
               <button
                 type="submit"
@@ -541,7 +506,7 @@ export default function RookAI() {
             </div>
           </form>
           <p className={cn("text-[10px] text-center mt-4 uppercase tracking-widest opacity-70 flex items-center justify-center gap-2", theme.muted)}>
-            <HelpCircle size={10}/> Answers come from your AnythingLLM workspace documents.
+            {referenceImageName ? `Reference image attached: ${referenceImageName}` : 'Docs, chat, study images, charts, and graphs from one prompt bar.'}
           </p>
         </div>
       </main>
@@ -551,17 +516,25 @@ export default function RookAI() {
 
 function LoginScreen({
   isDark,
-  onToggleTheme,
+  onClose,
   onVerified,
 }: {
   isDark: boolean;
-  onToggleTheme: () => void;
-  onVerified: (session: UserSession) => void;
+  onClose: () => void;
+  onVerified: (session: UserSession, profile: UserProfile) => void;
 }) {
+  const [channel, setChannel] = useState<'email' | 'sms'>('email');
+  const [profile, setProfile] = useState<UserProfile>({
+    name: '',
+    age: '',
+    role: 'Student',
+    goal: '',
+  });
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
-  const [step, setStep] = useState<'email' | 'otp'>('email');
-  const [message, setMessage] = useState('Use your email to unlock the document chat workspace.');
+  const [step, setStep] = useState<'contact' | 'otp'>('contact');
+  const [message, setMessage] = useState('Explore Rook AI, then verify by email or mobile when you are ready to chat.');
   const [isLoading, setIsLoading] = useState(false);
 
   const requestOtp = async (event: FormEvent) => {
@@ -573,7 +546,7 @@ function LoginScreen({
       const response = await fetch(`${API_BASE_URL}/auth/request-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, phone, channel, profile }),
       });
       const data = await readApiResponse(response);
 
@@ -597,13 +570,13 @@ function LoginScreen({
       const response = await fetch(`${API_BASE_URL}/auth/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, otp }),
+        body: JSON.stringify({ email, phone, channel, otp }),
       });
       const data = await readApiResponse(response);
 
       if (!response.ok) throw new Error(data.error || 'Verification failed.');
 
-      onVerified({ email: data.user.email, token: data.token });
+      onVerified({ ...data.user, token: data.token }, data.profile || profile);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Verification failed.');
     } finally {
@@ -612,13 +585,13 @@ function LoginScreen({
   };
 
   return (
-    <div className={cn("min-h-screen w-full flex items-center justify-center px-6 transition-colors", isDark ? "bg-[#09090b] text-zinc-100" : "bg-slate-50 text-slate-950")}>
+    <div className={cn("fixed inset-0 z-50 flex items-center justify-center px-6 backdrop-blur-md transition-colors", isDark ? "bg-[#09090b]/90 text-zinc-100" : "bg-slate-50/90 text-slate-950")}>
       <button
-        onClick={onToggleTheme}
+        onClick={onClose}
         className={cn("absolute right-6 top-6 p-3 rounded-full border transition-colors", isDark ? "border-zinc-800 hover:bg-zinc-900" : "border-slate-200 bg-white hover:bg-slate-100")}
-        aria-label="Toggle theme"
+        aria-label="Close verification"
       >
-        {isDark ? <Sun size={18} /> : <Moon size={18} />}
+        <X size={18} />
       </button>
       <div className={cn("w-full max-w-md rounded-2xl border p-8 shadow-2xl", isDark ? "bg-zinc-950 border-zinc-800" : "bg-white border-slate-200")}>
         <div className="mb-8">
@@ -629,25 +602,90 @@ function LoginScreen({
           <p className={cn("mt-2 text-sm leading-6", isDark ? "text-zinc-400" : "text-slate-600")}>{message}</p>
         </div>
 
-        {step === 'email' ? (
+        {step === 'contact' ? (
           <form onSubmit={requestOtp} className="space-y-4">
-            <label className="block text-sm font-medium" htmlFor="email">Email address</label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="space-y-2 text-sm font-medium">
+                Name
+                <input
+                  className={cn("w-full rounded-xl border px-4 py-3 outline-none", isDark ? "border-zinc-800 bg-zinc-900" : "border-slate-200 bg-slate-50")}
+                  required
+                  value={profile.name}
+                  onChange={event => setProfile(prev => ({ ...prev, name: event.target.value }))}
+                  placeholder="Your name"
+                />
+              </label>
+              <label className="space-y-2 text-sm font-medium">
+                Age
+                <input
+                  className={cn("w-full rounded-xl border px-4 py-3 outline-none", isDark ? "border-zinc-800 bg-zinc-900" : "border-slate-200 bg-slate-50")}
+                  value={profile.age}
+                  onChange={event => setProfile(prev => ({ ...prev, age: event.target.value }))}
+                  placeholder="18"
+                />
+              </label>
+            </div>
+            <label className="space-y-2 text-sm font-medium block">
+              Account title
+              <select
+                className={cn("w-full rounded-xl border px-4 py-3 outline-none", isDark ? "border-zinc-800 bg-zinc-900" : "border-slate-200 bg-slate-50")}
+                value={profile.role}
+                onChange={event => setProfile(prev => ({ ...prev, role: event.target.value }))}
+              >
+                <option>Student</option>
+                <option>Working professional</option>
+                <option>Founder</option>
+                <option>Researcher</option>
+                <option>Other</option>
+              </select>
+            </label>
+            <div className={cn("grid grid-cols-2 rounded-xl border p-1 text-sm font-semibold", isDark ? "border-zinc-800 bg-zinc-900" : "border-slate-200 bg-slate-50")}>
+              <button type="button" className={cn("rounded-lg px-3 py-2", channel === 'email' && "bg-indigo-600 text-white")} onClick={() => setChannel('email')}>
+                Email OTP
+              </button>
+              <button type="button" className={cn("rounded-lg px-3 py-2", channel === 'sms' && "bg-indigo-600 text-white")} onClick={() => setChannel('sms')}>
+                SMS OTP
+              </button>
+            </div>
+            <label className="block text-sm font-medium" htmlFor={channel === 'email' ? 'email' : 'phone'}>
+              {channel === 'email' ? 'Email address' : 'Mobile number'}
+            </label>
             <div className={cn("flex items-center gap-3 rounded-xl border px-4 py-3", isDark ? "border-zinc-800 bg-zinc-900" : "border-slate-200 bg-slate-50")}>
-              <Mail size={18} className="text-indigo-500" />
-              <input
-                id="email"
-                type="email"
-                required
-                value={email}
-                onChange={event => setEmail(event.target.value)}
-                className="w-full bg-transparent outline-none"
-                placeholder="you@example.com"
-              />
+              {channel === 'email' ? <Mail size={18} className="text-indigo-500" /> : <Phone size={18} className="text-indigo-500" />}
+              {channel === 'email' ? (
+                <input
+                  id="email"
+                  type="email"
+                  required
+                  value={email}
+                  onChange={event => setEmail(event.target.value)}
+                  className="w-full bg-transparent outline-none"
+                  placeholder="you@example.com"
+                />
+              ) : (
+                <input
+                  id="phone"
+                  type="tel"
+                  required
+                  value={phone}
+                  onChange={event => setPhone(event.target.value)}
+                  className="w-full bg-transparent outline-none"
+                  placeholder="+94771234567"
+                />
+              )}
             </div>
             <button className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white hover:bg-indigo-500 disabled:opacity-60" disabled={isLoading}>
               {isLoading && <Loader2 size={18} className="animate-spin" />}
               Send OTP
             </button>
+            <div className="grid grid-cols-2 gap-3">
+              <a className={cn("flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold", isDark ? "border-zinc-800 hover:bg-zinc-900" : "border-slate-200 hover:bg-slate-50")} href={`${API_BASE_URL}/auth/social/google`}>
+                <Globe2 size={16} /> Google
+              </a>
+              <a className={cn("flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold", isDark ? "border-zinc-800 hover:bg-zinc-900" : "border-slate-200 hover:bg-slate-50")} href={`${API_BASE_URL}/auth/social/github`}>
+                <BookOpen size={16} /> GitHub
+              </a>
+            </div>
           </form>
         ) : (
           <form onSubmit={verifyOtp} className="space-y-4">
@@ -667,126 +705,12 @@ function LoginScreen({
               {isLoading && <Loader2 size={18} className="animate-spin" />}
               Verify and continue
             </button>
-            <button type="button" className="w-full text-sm text-indigo-500" onClick={() => setStep('email')}>
-              Change email
+            <button type="button" className="w-full text-sm text-indigo-500" onClick={() => setStep('contact')}>
+              Change verification method
             </button>
           </form>
         )}
       </div>
-    </div>
-  );
-}
-
-function ProfileModal({
-  isDark,
-  email,
-  onSave,
-}: {
-  isDark: boolean;
-  email: string;
-  onSave: (profile: UserProfile) => Promise<void>;
-}) {
-  const [profile, setProfile] = useState<UserProfile>({
-    name: '',
-    age: '',
-    role: 'Student',
-    goal: '',
-  });
-  const [error, setError] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
-
-  const submitProfile = async (event: FormEvent) => {
-    event.preventDefault();
-    setError('');
-
-    if (!profile.name.trim()) {
-      setError('Please add your name so Rook can greet you properly.');
-      return;
-    }
-
-    setIsSaving(true);
-    try {
-      await onSave({
-        ...profile,
-        name: profile.name.trim(),
-        age: profile.age.trim(),
-        role: profile.role.trim(),
-        goal: profile.goal.trim(),
-      });
-    } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Could not save profile.');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-6 backdrop-blur-sm">
-      <form onSubmit={submitProfile} className={cn("w-full max-w-lg rounded-2xl border p-7 shadow-2xl", isDark ? "border-zinc-800 bg-zinc-950 text-zinc-100" : "border-slate-200 bg-white text-slate-950")}>
-        <div className="mb-6">
-          <div className="mb-4 inline-flex rounded-xl bg-gradient-to-br from-indigo-500 to-fuchsia-600 p-3 text-white">
-            <User size={22} />
-          </div>
-          <h2 className="text-2xl font-bold">Tell Rook about you</h2>
-          <p className={cn("mt-2 text-sm leading-6", isDark ? "text-zinc-400" : "text-slate-600")}>
-            You are verified as {email}. Add a few details so the chat feels personal and useful 😊
-          </p>
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label className="space-y-2 text-sm font-medium">
-            Name
-            <input
-              className={cn("w-full rounded-xl border px-4 py-3 outline-none", isDark ? "border-zinc-800 bg-zinc-900" : "border-slate-200 bg-slate-50")}
-              value={profile.name}
-              onChange={event => setProfile(prev => ({ ...prev, name: event.target.value }))}
-              placeholder="Your name"
-            />
-          </label>
-          <label className="space-y-2 text-sm font-medium">
-            Age
-            <input
-              className={cn("w-full rounded-xl border px-4 py-3 outline-none", isDark ? "border-zinc-800 bg-zinc-900" : "border-slate-200 bg-slate-50")}
-              value={profile.age}
-              onChange={event => setProfile(prev => ({ ...prev, age: event.target.value }))}
-              placeholder="18"
-            />
-          </label>
-          <label className="space-y-2 text-sm font-medium sm:col-span-2">
-            Are you studying or working?
-            <select
-              className={cn("w-full rounded-xl border px-4 py-3 outline-none", isDark ? "border-zinc-800 bg-zinc-900" : "border-slate-200 bg-slate-50")}
-              value={profile.role}
-              onChange={event => setProfile(prev => ({ ...prev, role: event.target.value }))}
-            >
-              <option>Student</option>
-              <option>Working professional</option>
-              <option>Founder</option>
-              <option>Researcher</option>
-              <option>Other</option>
-            </select>
-          </label>
-          <label className="space-y-2 text-sm font-medium sm:col-span-2">
-            Main goal
-            <input
-              className={cn("w-full rounded-xl border px-4 py-3 outline-none", isDark ? "border-zinc-800 bg-zinc-900" : "border-slate-200 bg-slate-50")}
-              value={profile.goal}
-              onChange={event => setProfile(prev => ({ ...prev, goal: event.target.value }))}
-              placeholder="Study faster, build projects, create images..."
-            />
-          </label>
-        </div>
-
-        {error && <p className="mt-4 text-sm text-red-400">{error}</p>}
-
-        <button
-          className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
-          disabled={isSaving}
-        >
-          {isSaving && <Loader2 size={18} className="animate-spin" />}
-          Start chatting
-        </button>
-      </form>
     </div>
   );
 }

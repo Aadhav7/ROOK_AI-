@@ -1,14 +1,32 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
+
+function loadDotEnv() {
+  const envPath = resolve('.env');
+  if (!existsSync(envPath)) return;
+
+  for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const separator = trimmed.indexOf('=');
+    if (separator === -1) continue;
+    const key = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim().replace(/^["']|["']$/g, '');
+    if (key && process.env[key] === undefined) process.env[key] = value;
+  }
+}
+
+loadDotEnv();
 
 const PORT = Number(process.env.PORT || 8787);
 const ANYTHINGLLM_BASE_URL = (process.env.ANYTHINGLLM_BASE_URL || 'http://localhost:3001/api').replace(/\/$/, '');
 const ANYTHINGLLM_API_KEY = process.env.ANYTHINGLLM_API_KEY || '7ZCNN63-MD44TTE-K3QJJYW-0NJVHYE';
 const WORKSPACE_SLUG = process.env.ANYTHINGLLM_WORKSPACE_SLUG || 'my-workspace';
 const APP_ORIGIN = process.env.APP_ORIGIN || '*';
+const MONGODB_URI = process.env.MONGODB_URI;
 const DATA_API_URL = process.env.MONGODB_DATA_API_URL;
 const DATA_API_KEY = process.env.MONGODB_DATA_API_KEY;
 const DATA_SOURCE = process.env.MONGODB_DATA_SOURCE || 'Cluster0';
@@ -18,6 +36,9 @@ const PROFILES_COLLECTION = process.env.MONGODB_PROFILES_COLLECTION || 'profiles
 const OTP_COLLECTION = process.env.MONGODB_OTP_COLLECTION || 'otp_events';
 const EVENTS_COLLECTION = process.env.MONGODB_EVENTS_COLLECTION || 'user_events';
 const EMAIL_WEBHOOK_URL = process.env.EMAIL_WEBHOOK_URL;
+const SMS_WEBHOOK_URL = process.env.SMS_WEBHOOK_URL;
+const GOOGLE_AUTH_URL = process.env.GOOGLE_AUTH_URL;
+const GITHUB_AUTH_URL = process.env.GITHUB_AUTH_URL;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || 'gemini-1.5-flash';
 const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
@@ -29,6 +50,7 @@ const STATE_FILE = resolve('.rook-ai-state.json');
 const otpStore = new Map();
 const sessionStore = new Map();
 const profileStore = new Map();
+let mongoClientPromise;
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -86,6 +108,21 @@ function hash(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function normalizeContact(channel, contact) {
+  const value = String(contact || '').trim();
+  if (channel === 'sms') return value.replace(/[^\d+]/g, '');
+  return value.toLowerCase();
+}
+
+function getOtpKey(channel, contact) {
+  return `${channel}:${normalizeContact(channel, contact)}`;
+}
+
+function isValidContact(channel, contact) {
+  if (channel === 'sms') return /^\+?[1-9]\d{7,14}$/.test(contact);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact);
+}
+
 function getBearerToken(req) {
   const header = req.headers.authorization || '';
   return header.startsWith('Bearer ') ? header.slice(7) : '';
@@ -107,12 +144,26 @@ function getSession(req) {
 function requireSession(req, res) {
   const session = getSession(req);
   if (!session) {
-    sendJson(res, 401, { error: 'Please verify your email before using Rook AI.' });
+    sendJson(res, 401, { error: 'Please verify your email or mobile number before using Rook AI.' });
   }
   return session;
 }
 
 async function mongoAction(action, collection, document) {
+  if (MONGODB_URI) {
+    if (action !== 'insertOne') return null;
+    const { MongoClient, ServerApiVersion } = await import('mongodb');
+    mongoClientPromise ||= new MongoClient(MONGODB_URI, {
+      serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+      },
+    }).connect();
+    const client = await mongoClientPromise;
+    return client.db(DATABASE).collection(collection).insertOne(document);
+  }
+
   if (!DATA_API_URL || !DATA_API_KEY) return null;
 
   const response = await fetch(`${DATA_API_URL.replace(/\/$/, '')}/action/${action}`, {
@@ -137,27 +188,27 @@ async function mongoAction(action, collection, document) {
   return response.json();
 }
 
-async function saveUserLogin(email) {
+async function saveUserLogin(sessionIdentity) {
   const document = {
-    email,
+    ...sessionIdentity,
     verifiedAt: new Date().toISOString(),
-    provider: 'email-otp',
+    provider: `${sessionIdentity.authChannel}-otp`,
   };
 
   await mongoAction('insertOne', USERS_COLLECTION, document);
   return document;
 }
 
-async function saveUserEvent(email, type, details = {}) {
+async function saveUserEvent(sessionIdentity, type, details = {}) {
   await mongoAction('insertOne', EVENTS_COLLECTION, {
-    email,
+    ...sessionIdentity,
     type,
     details,
     createdAt: new Date().toISOString(),
   });
 }
 
-async function saveUserProfile(email, profile) {
+async function saveUserProfile(sessionIdentity, profile) {
   const cleanProfile = {
     name: String(profile.name || '').trim().slice(0, 80),
     age: String(profile.age || '').trim().slice(0, 20),
@@ -165,10 +216,10 @@ async function saveUserProfile(email, profile) {
     goal: String(profile.goal || '').trim().slice(0, 180),
   };
 
-  profileStore.set(email, cleanProfile);
+  profileStore.set(sessionIdentity.userId, cleanProfile);
   await saveState();
   await mongoAction('insertOne', PROFILES_COLLECTION, {
-    email,
+    ...sessionIdentity,
     ...cleanProfile,
     updatedAt: new Date().toISOString(),
   });
@@ -190,6 +241,22 @@ async function sendOtpEmail(email, otp) {
   }
 
   console.log(`Rook AI OTP for ${email}: ${otp}`);
+}
+
+async function sendOtpSms(phone, otp) {
+  if (SMS_WEBHOOK_URL) {
+    await fetch(SMS_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: phone,
+        text: `Your Rook AI verification code is ${otp}. It expires in 10 minutes.`,
+      }),
+    });
+    return;
+  }
+
+  console.log(`Rook AI SMS OTP for ${phone}: ${otp}`);
 }
 
 async function proxyAnythingLLM(path, init) {
@@ -221,6 +288,196 @@ function parseDataUrl(dataUrl) {
   const match = /^data:(.+);base64,(.+)$/.exec(dataUrl || '');
   if (!match) return null;
   return { mimeType: match[1], data: match[2] };
+}
+
+function escapeSvg(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function splitWordsIntoLines(text, maxLineLength = 34, maxLines = 3) {
+  const words = String(text || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  const lines = [];
+
+  for (const word of words) {
+    const current = lines[lines.length - 1] || '';
+    if (!current) {
+      lines.push(word);
+    } else if (`${current} ${word}`.length <= maxLineLength) {
+      lines[lines.length - 1] = `${current} ${word}`;
+    } else if (lines.length < maxLines) {
+      lines.push(word);
+    }
+  }
+
+  return lines.length ? lines : ['Study visual'];
+}
+
+function createLocalStudyVisual(prompt, reason = '') {
+  const title = splitWordsIntoLines(prompt, 42, 2);
+  const topic = title.join(' ');
+  const isArchitecture = /\b(architecture|tier|layer|client|server|database|frontend|backend|api)\b/i.test(prompt);
+  const isTree = /\b(tree|hierarchy|diagram|mind\s*map|flow)\b/i.test(prompt);
+  const nodes = isTree
+    ? ['Root idea', 'Branch 1', 'Branch 2', 'Branch 3', 'Detail A', 'Detail B']
+    : ['Key point', 'Example', 'Connection', 'Result', 'Review'];
+  const warning = reason
+    ? 'Nano Banana quota is unavailable, so Rook generated this local study visual.'
+    : 'Generated as a local study visual.';
+
+  const nodeText = nodes.map((node, index) => escapeSvg(node || `Point ${index + 1}`));
+  const svg = isArchitecture ? `
+    <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#0f172a"/>
+          <stop offset="0.5" stop-color="#1e1b4b"/>
+          <stop offset="1" stop-color="#0f766e"/>
+        </linearGradient>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.35"/>
+        </filter>
+        <marker id="arrow" markerWidth="14" markerHeight="14" refX="10" refY="5" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="#67e8f9"/>
+        </marker>
+      </defs>
+      <rect width="1280" height="720" rx="32" fill="url(#bg)"/>
+      <text x="640" y="72" text-anchor="middle" fill="#f8fafc" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="850">${escapeSvg(title[0])}</text>
+      ${title[1] ? `<text x="640" y="112" text-anchor="middle" fill="#99f6e4" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="650">${escapeSvg(title[1])}</text>` : ''}
+      <g stroke="#67e8f9" stroke-width="6" marker-end="url(#arrow)" opacity="0.9">
+        <path d="M370 335 H500"/>
+        <path d="M780 335 H910"/>
+      </g>
+      <g filter="url(#shadow)" font-family="Inter, Arial, sans-serif" text-anchor="middle">
+        <rect x="110" y="230" width="260" height="210" rx="28" fill="#e0f2fe"/>
+        <text x="240" y="290" fill="#075985" font-size="26" font-weight="850">Presentation Tier</text>
+        <text x="240" y="335" fill="#334155" font-size="19">UI, browser, mobile app</text>
+        <text x="240" y="372" fill="#334155" font-size="19">Collects user requests</text>
+        <rect x="510" y="230" width="260" height="210" rx="28" fill="#ede9fe"/>
+        <text x="640" y="290" fill="#4c1d95" font-size="26" font-weight="850">Application Tier</text>
+        <text x="640" y="335" fill="#334155" font-size="19">Business logic and APIs</text>
+        <text x="640" y="372" fill="#334155" font-size="19">Processes syllabus tasks</text>
+        <rect x="910" y="230" width="260" height="210" rx="28" fill="#dcfce7"/>
+        <text x="1040" y="290" fill="#166534" font-size="26" font-weight="850">Data Tier</text>
+        <text x="1040" y="335" fill="#334155" font-size="19">Database and files</text>
+        <text x="1040" y="372" fill="#334155" font-size="19">Stores documents/results</text>
+      </g>
+      <rect x="150" y="520" width="980" height="74" rx="22" fill="#020617" opacity="0.45"/>
+      <text x="640" y="565" text-anchor="middle" fill="#cffafe" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700">Request flows from user interface to logic, then to stored data and back as a response.</text>
+      <text x="640" y="670" text-anchor="middle" fill="#ccfbf1" font-family="Inter, Arial, sans-serif" font-size="18">${escapeSvg(warning)}</text>
+    </svg>`
+    : isTree ? `
+    <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#111827"/>
+          <stop offset="0.55" stop-color="#312e81"/>
+          <stop offset="1" stop-color="#581c87"/>
+        </linearGradient>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.35"/>
+        </filter>
+      </defs>
+      <rect width="1280" height="720" rx="32" fill="url(#bg)"/>
+      <text x="640" y="70" text-anchor="middle" fill="#f8fafc" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="800">${escapeSvg(title[0])}</text>
+      ${title[1] ? `<text x="640" y="112" text-anchor="middle" fill="#c4b5fd" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="600">${escapeSvg(title[1])}</text>` : ''}
+      <g stroke="#a78bfa" stroke-width="5" stroke-linecap="round" opacity="0.85">
+        <path d="M640 196 L390 330"/>
+        <path d="M640 196 L640 330"/>
+        <path d="M640 196 L890 330"/>
+        <path d="M390 410 L310 520"/>
+        <path d="M390 410 L470 520"/>
+      </g>
+      <g filter="url(#shadow)" font-family="Inter, Arial, sans-serif" text-anchor="middle">
+        <rect x="500" y="145" width="280" height="90" rx="24" fill="#ffffff" opacity="0.98"/>
+        <text x="640" y="200" fill="#312e81" font-size="24" font-weight="800">${nodeText[0]}</text>
+        <rect x="260" y="325" width="260" height="86" rx="22" fill="#ede9fe"/>
+        <text x="390" y="378" fill="#4c1d95" font-size="22" font-weight="800">${nodeText[1]}</text>
+        <rect x="510" y="325" width="260" height="86" rx="22" fill="#e0f2fe"/>
+        <text x="640" y="378" fill="#075985" font-size="22" font-weight="800">${nodeText[2]}</text>
+        <rect x="760" y="325" width="260" height="86" rx="22" fill="#dcfce7"/>
+        <text x="890" y="378" fill="#166534" font-size="22" font-weight="800">${nodeText[3]}</text>
+        <rect x="185" y="520" width="250" height="78" rx="20" fill="#fef3c7"/>
+        <text x="310" y="568" fill="#92400e" font-size="20" font-weight="800">${nodeText[4]}</text>
+        <rect x="445" y="520" width="250" height="78" rx="20" fill="#ffe4e6"/>
+        <text x="570" y="568" fill="#9f1239" font-size="20" font-weight="800">${nodeText[5]}</text>
+      </g>
+      <text x="640" y="670" text-anchor="middle" fill="#ddd6fe" font-family="Inter, Arial, sans-serif" font-size="18">${escapeSvg(warning)}</text>
+    </svg>`
+    : `
+    <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#0f172a"/>
+          <stop offset="0.5" stop-color="#155e75"/>
+          <stop offset="1" stop-color="#14532d"/>
+        </linearGradient>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000" flood-opacity="0.3"/>
+        </filter>
+      </defs>
+      <rect width="1280" height="720" rx="32" fill="url(#bg)"/>
+      <text x="90" y="94" fill="#f8fafc" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="850">${escapeSvg(title[0])}</text>
+      ${title[1] ? `<text x="90" y="136" fill="#bae6fd" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="650">${escapeSvg(title[1])}</text>` : ''}
+      <g filter="url(#shadow)" font-family="Inter, Arial, sans-serif">
+        ${nodeText.map((node, index) => {
+          const x = 110 + (index % 3) * 360;
+          const y = index < 3 ? 220 : 430;
+          return `<rect x="${x}" y="${y}" width="300" height="128" rx="24" fill="${index % 2 ? '#ecfeff' : '#f0fdf4'}"/>
+            <text x="${x + 28}" y="${y + 58}" fill="#0f172a" font-size="24" font-weight="800">${node}</text>
+            <text x="${x + 28}" y="${y + 92}" fill="#475569" font-size="17">Connected to ${escapeSvg(topic.slice(0, 28) || 'the topic')}</text>`;
+        }).join('')}
+      </g>
+      <text x="640" y="670" text-anchor="middle" fill="#ccfbf1" font-family="Inter, Arial, sans-serif" font-size="18">${escapeSvg(warning)}</text>
+    </svg>`;
+
+  return {
+    imageUrl: `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`,
+    text: warning,
+    model: 'rook-local-study-visual',
+    fallback: true,
+  };
+}
+
+function isQuotaError(error) {
+  return error instanceof Error && /quota|rate.?limit|429|free_tier/i.test(error.message);
+}
+
+async function getWorkspaceVisualContext(prompt, session, profile) {
+  try {
+    const data = await proxyAnythingLLM(`/v1/workspace/${WORKSPACE_SLUG}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: [
+          'Use the uploaded syllabus, PPT files, and documents only.',
+          'Extract the most relevant facts, terms, structure, relationships, and examples needed to draw a useful study diagram.',
+          'Return concise visual design notes. Do not answer conversationally.',
+          buildPersonaPrompt(prompt, profileStore.get(session.userId) || profileStore.get(session.email) || profile || {}, 'documents'),
+        ].join('\n'),
+        mode: 'query',
+      }),
+    });
+
+    return String(data.textResponse || data.response || data.message || '').trim().slice(0, 1800);
+  } catch {
+    return '';
+  }
+}
+
+function buildStudyVisualPrompt(prompt, workspaceContext, profile) {
+  const learner = profile?.role || 'student';
+  return [
+    'Create a clean syllabus-oriented educational visual for a learner.',
+    'Prefer diagrams, charts, architecture layers, timelines, flowcharts, mind maps, labeled examples, and study-friendly layouts when useful.',
+    'Use clear labels, high contrast, and concise text. Do not include fake URLs or markdown image placeholders.',
+    `Learner type: ${learner}.`,
+    workspaceContext ? `Relevant syllabus/PPT/document context:\n${workspaceContext}` : 'No document context was available; use the user request directly.',
+    `User request: ${prompt}`,
+  ].join('\n\n');
 }
 
 async function generateGeminiImage({ prompt, referenceImage }) {
@@ -374,7 +631,7 @@ async function generateOllamaText(message, profile) {
 }
 
 async function answerGeneralQuestion(message, session, clientProfile) {
-  const profile = clientProfile || profileStore.get(session.email) || {};
+  const profile = clientProfile || profileStore.get(session.userId) || profileStore.get(session.email) || {};
   if (/^(hi|hello|hey|yo|sup)\b/i.test(message.trim())) {
     return {
       text: localFriendlyReply(message, profile),
@@ -462,9 +719,14 @@ const server = createServer(async (req, res) => {
         anythingllmBaseUrl: ANYTHINGLLM_BASE_URL,
         workspace: WORKSPACE_SLUG,
         hasApiKey: Boolean(ANYTHINGLLM_API_KEY),
-        auth: 'email-otp',
-        mongoConfigured: Boolean(DATA_API_URL && DATA_API_KEY),
+        auth: 'email-or-sms-otp',
+        mongoConfigured: Boolean(MONGODB_URI || (DATA_API_URL && DATA_API_KEY)),
         emailConfigured: Boolean(EMAIL_WEBHOOK_URL),
+        smsConfigured: Boolean(SMS_WEBHOOK_URL),
+        socialLogin: {
+          google: Boolean(GOOGLE_AUTH_URL),
+          github: Boolean(GITHUB_AUTH_URL),
+        },
         generalChatConfigured: true,
         imageGenerationConfigured: Boolean(GEMINI_API_KEY),
       });
@@ -473,51 +735,60 @@ const server = createServer(async (req, res) => {
 
     if (req.method === 'POST' && req.url === '/api/auth/request-otp') {
       const rawBody = await readBody(req);
-      const { email } = JSON.parse(rawBody.toString('utf8') || '{}');
-      const normalizedEmail = String(email || '').trim().toLowerCase();
+      const { email, phone, channel = 'email', profile = {} } = JSON.parse(rawBody.toString('utf8') || '{}');
+      const authChannel = channel === 'sms' ? 'sms' : 'email';
+      const contact = normalizeContact(authChannel, authChannel === 'sms' ? phone : email);
 
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-        sendJson(res, 400, { error: 'Enter a valid email address.' });
+      if (!isValidContact(authChannel, contact)) {
+        sendJson(res, 400, { error: authChannel === 'sms' ? 'Enter a valid mobile number.' : 'Enter a valid email address.' });
         return;
       }
 
+      const key = getOtpKey(authChannel, contact);
       const otp = String(randomInt(100000, 999999));
       const otpHash = hash(otp);
       const expiresAt = Date.now() + 10 * 60 * 1000;
 
-      otpStore.set(normalizedEmail, { otpHash, expiresAt, attempts: 0 });
+      otpStore.set(key, { otpHash, expiresAt, attempts: 0, profile });
       await mongoAction('insertOne', OTP_COLLECTION, {
-        email: normalizedEmail,
+        authChannel,
+        contact,
         otpHash,
         requestedAt: new Date().toISOString(),
         expiresAt: new Date(expiresAt).toISOString(),
       });
-      await sendOtpEmail(normalizedEmail, otp);
+      if (authChannel === 'sms') {
+        await sendOtpSms(contact, otp);
+      } else {
+        await sendOtpEmail(contact, otp);
+      }
 
       sendJson(res, 200, {
-        message: EMAIL_WEBHOOK_URL
-          ? 'Verification code sent to your email.'
-          : 'Verification code generated. Check the backend terminal while email is not configured.',
-        devOtp: EMAIL_WEBHOOK_URL ? undefined : otp,
+        message: authChannel === 'sms'
+          ? (SMS_WEBHOOK_URL ? 'Verification code sent to your mobile.' : 'SMS code generated. Check the backend terminal while SMS is not configured.')
+          : (EMAIL_WEBHOOK_URL ? 'Verification code sent to your email.' : 'Email code generated. Check the backend terminal while email is not configured.'),
+        devOtp: (authChannel === 'sms' ? SMS_WEBHOOK_URL : EMAIL_WEBHOOK_URL) ? undefined : otp,
       });
       return;
     }
 
     if (req.method === 'POST' && req.url === '/api/auth/verify-otp') {
       const rawBody = await readBody(req);
-      const { email, otp } = JSON.parse(rawBody.toString('utf8') || '{}');
-      const normalizedEmail = String(email || '').trim().toLowerCase();
-      const record = otpStore.get(normalizedEmail);
+      const { email, phone, channel = 'email', otp } = JSON.parse(rawBody.toString('utf8') || '{}');
+      const authChannel = channel === 'sms' ? 'sms' : 'email';
+      const contact = normalizeContact(authChannel, authChannel === 'sms' ? phone : email);
+      const key = getOtpKey(authChannel, contact);
+      const record = otpStore.get(key);
 
       if (!record || record.expiresAt < Date.now()) {
-        otpStore.delete(normalizedEmail);
+        otpStore.delete(key);
         sendJson(res, 400, { error: 'The verification code expired. Request a new one.' });
         return;
       }
 
       record.attempts += 1;
       if (record.attempts > 5) {
-        otpStore.delete(normalizedEmail);
+        otpStore.delete(key);
         sendJson(res, 429, { error: 'Too many attempts. Request a new code.' });
         return;
       }
@@ -527,23 +798,44 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      otpStore.delete(normalizedEmail);
-      await saveUserLogin(normalizedEmail);
+      otpStore.delete(key);
+      const sessionIdentity = {
+        userId: key,
+        authChannel,
+        email: authChannel === 'email' ? contact : undefined,
+        phone: authChannel === 'sms' ? contact : undefined,
+      };
+      await saveUserLogin(sessionIdentity);
+      const savedProfile = record.profile?.name
+        ? await saveUserProfile(sessionIdentity, record.profile)
+        : null;
 
       const token = randomBytes(32).toString('hex');
       sessionStore.set(token, {
-        email: normalizedEmail,
+        ...sessionIdentity,
         expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       });
       await saveState();
 
-      sendJson(res, 200, { token, user: { email: normalizedEmail } });
+      sendJson(res, 200, { token, user: sessionIdentity, profile: savedProfile });
       return;
     }
 
     if (req.method === 'GET' && req.url === '/api/auth/me') {
       const session = getSession(req);
-      sendJson(res, session ? 200 : 401, session ? { user: { email: session.email }, profile: profileStore.get(session.email) || null } : { error: 'Not signed in.' });
+      sendJson(res, session ? 200 : 401, session ? { user: session, profile: profileStore.get(session.userId) || profileStore.get(session.email) || null } : { error: 'Not signed in.' });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url?.startsWith('/api/auth/social/')) {
+      const provider = req.url.split('/').pop();
+      const redirectUrl = provider === 'google' ? GOOGLE_AUTH_URL : provider === 'github' ? GITHUB_AUTH_URL : '';
+      if (!redirectUrl) {
+        sendJson(res, 501, { error: `${provider} sign-in needs an OAuth redirect URL configured in the backend environment.` });
+        return;
+      }
+      res.writeHead(302, { Location: redirectUrl });
+      res.end();
       return;
     }
 
@@ -553,8 +845,8 @@ const server = createServer(async (req, res) => {
 
       const rawBody = await readBody(req);
       const profile = JSON.parse(rawBody.toString('utf8') || '{}');
-      const savedProfile = await saveUserProfile(session.email, profile);
-      await saveUserEvent(session.email, 'profile_completed', savedProfile);
+      const savedProfile = await saveUserProfile(session, profile);
+      await saveUserEvent(session, 'profile_completed', savedProfile);
 
       sendJson(res, 200, { profile: savedProfile });
       return;
@@ -574,7 +866,7 @@ const server = createServer(async (req, res) => {
 
       if (mode === 'general') {
         const answer = await answerGeneralQuestion(message, session, profile);
-        await saveUserEvent(session.email, 'chat_message', {
+        await saveUserEvent(session, 'chat_message', {
           mode,
           provider: answer.provider,
           messageLength: message.length,
@@ -592,12 +884,12 @@ const server = createServer(async (req, res) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: buildPersonaPrompt(message, profileStore.get(session.email) || profile || {}, 'documents'),
+          message: buildPersonaPrompt(message, profileStore.get(session.userId) || profileStore.get(session.email) || profile || {}, 'documents'),
           mode: 'query',
         }),
       });
 
-      await saveUserEvent(session.email, 'chat_message', {
+      await saveUserEvent(session, 'chat_message', {
         mode,
         messageLength: message.length,
       });
@@ -627,7 +919,7 @@ const server = createServer(async (req, res) => {
         body: rawBody,
       });
 
-      await saveUserEvent(session.email, 'file_upload', {
+      await saveUserEvent(session, 'file_upload', {
         contentType,
         byteLength: rawBody.length,
       });
@@ -641,18 +933,30 @@ const server = createServer(async (req, res) => {
       if (!session) return;
 
       const rawBody = await readBody(req);
-      const { prompt, referenceImage } = JSON.parse(rawBody.toString('utf8') || '{}');
+      const { prompt, referenceImage, useWorkspaceContext = true, profile } = JSON.parse(rawBody.toString('utf8') || '{}');
 
       if (!prompt || typeof prompt !== 'string') {
         sendJson(res, 400, { error: 'Image prompt is required.' });
         return;
       }
 
-      const image = await generateGeminiImage({ prompt, referenceImage });
-      await saveUserEvent(session.email, 'image_generation', {
+      const workspaceContext = useWorkspaceContext
+        ? await getWorkspaceVisualContext(prompt, session, profile)
+        : '';
+      const visualPrompt = buildStudyVisualPrompt(prompt, workspaceContext, profileStore.get(session.userId) || profileStore.get(session.email) || profile || {});
+      let image;
+      try {
+        image = await generateGeminiImage({ prompt: visualPrompt, referenceImage });
+      } catch (error) {
+        if (!isQuotaError(error)) throw error;
+        image = createLocalStudyVisual(`${prompt}\n${workspaceContext}`, error instanceof Error ? error.message : 'Image quota unavailable.');
+      }
+      await saveUserEvent(session, 'image_generation', {
         promptLength: prompt.length,
         hasReferenceImage: Boolean(referenceImage),
         model: image.model,
+        fallback: Boolean(image.fallback),
+        usedWorkspaceContext: Boolean(workspaceContext),
       });
 
       sendJson(res, 200, image);
@@ -678,8 +982,9 @@ server.listen(PORT, async () => {
   const builtFiles = existsSync(DIST_DIR) ? await readdir(DIST_DIR).catch(() => []) : [];
   console.log(`Rook AI backend listening on http://localhost:${PORT}`);
   console.log(`Proxying AnythingLLM workspace "${WORKSPACE_SLUG}" at ${ANYTHINGLLM_BASE_URL}`);
-  console.log(DATA_API_URL && DATA_API_KEY ? 'MongoDB Data API is configured.' : 'MongoDB Data API is not configured; login records stay in the running process.');
+  console.log(MONGODB_URI ? 'MongoDB Atlas driver is configured.' : DATA_API_URL && DATA_API_KEY ? 'MongoDB Data API is configured.' : 'MongoDB is not configured; login records stay in the running process.');
   console.log(EMAIL_WEBHOOK_URL ? 'Email webhook is configured.' : 'Email webhook is not configured; OTP codes print in this terminal.');
+  console.log(SMS_WEBHOOK_URL ? 'SMS webhook is configured.' : 'SMS webhook is not configured; SMS OTP codes print in this terminal.');
   console.log(`General chat tries Gemini, then Ollama at ${OLLAMA_BASE_URL}, then AnythingLLM, then a friendly fallback.`);
   console.log(GEMINI_API_KEY ? `Gemini image generation is configured with ${GEMINI_IMAGE_MODEL}.` : 'Gemini image generation is not configured; set GEMINI_API_KEY to enable images.');
   console.log(builtFiles.length ? 'Serving built frontend from dist.' : 'Run npm run build before production deploy.');

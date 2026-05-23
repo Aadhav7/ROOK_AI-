@@ -9,6 +9,7 @@ lerna-debug.log*
 
 node_modules
 dist
+.env
 *.local
 .rook-ai-state.json
 dist-ssr
