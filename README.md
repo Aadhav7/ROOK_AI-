@@ -1,6 +1,6 @@
 # Rook AI
 
-Rook AI is a React + Vite document chat UI with a small Node backend. The backend protects chat/upload behind email OTP login, proxies document chat to AnythingLLM, and has optional hooks for MongoDB login capture and email delivery.
+Rook AI is a React + Vite AI chat site. It now supports a Vercel cloud API with Supabase OTP auth, Supabase database tables for profiles/chat logs, Gemini text chat, Gemini image generation, and optional AnythingLLM document chat.
 
 ## Local Development
 
@@ -11,12 +11,31 @@ npm run server
 npm run dev
 ```
 
-The frontend uses `/api` in production and `http://localhost:8787/api` can be set with `VITE_ROOK_API_URL` during development if needed.
+The frontend uses `/api` in production. During local development, Vite proxies `/api` to the Node backend at `http://localhost:8787`.
 
-## OTP, Gmail, and MongoDB
+## Supabase Setup
+
+1. Create a Supabase project.
+2. Open the Supabase SQL editor and run `supabase/schema.sql`.
+3. Enable Email OTP in Supabase Auth. SMS OTP needs a Supabase-supported SMS provider.
+4. Add these variables in Vercel:
+
+```bash
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+GEMINI_API_KEY=your-google-ai-api-key
+GEMINI_TEXT_MODEL=gemini-1.5-flash
+GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
+```
+
+Keep `SUPABASE_SERVICE_ROLE_KEY` server-side only. Do not expose it with a `VITE_` prefix.
+
+## OTP, Gmail, MongoDB, and Local Backend
 
 Copy `.env.example` to `.env` on your deployment platform and fill the values.
 
+- On Vercel, `/api/auth/request-otp` and `/api/auth/verify-otp` use Supabase Auth.
 - Without `EMAIL_WEBHOOK_URL`, OTP codes are printed in the backend terminal for development.
 - To use Gmail, connect `EMAIL_WEBHOOK_URL` to a small email service or serverless function that sends mail through Gmail SMTP or Gmail API.
 - To capture login records and user activity in MongoDB, enable MongoDB Atlas Data API and fill `MONGODB_DATA_API_URL` plus `MONGODB_DATA_API_KEY`.
@@ -26,8 +45,8 @@ Copy `.env.example` to `.env` on your deployment platform and fill the values.
 
 Rook AI has two chat modes:
 
-- **Docs** uses AnythingLLM `query` mode to answer from uploaded PDF/DOC/TXT files.
-- **General** uses AnythingLLM `chat` mode so users can ask random questions even when no document is relevant.
+- **General** uses Gemini through the Vercel `/api/chat` route.
+- **Docs** uses AnythingLLM `query` mode when `ANYTHINGLLM_BASE_URL` and `ANYTHINGLLM_API_KEY` are configured. If AnythingLLM is not configured, the cloud API falls back to Gemini general chat.
 
 Image generation is available through Gemini image generation, also known as Nano Banana. Set these variables:
 
@@ -45,14 +64,22 @@ GEMINI_IMAGE_MODEL=gemini-3-pro-image-preview
 
 ## Deployment
 
-Build the web app, then start the Node server:
+For Vercel, deploy the repo as a Vite app. Vercel will build the frontend and serve the files in `api/` as serverless functions.
+
+Build locally before deploying:
+
+```bash
+npm run build
+```
+
+For a custom Node host, build the web app, then start the Node server:
 
 ```bash
 npm run build
 npm start
 ```
 
-After `npm run build`, `app.js` serves the compiled frontend from `dist` and the API from the same deployed server. Set these environment variables on the host:
+After `npm run build`, `app.js` serves the compiled frontend from `dist` and the API from the same deployed server. Set these optional document-chat variables on the host:
 
 ```bash
 PORT=8787
@@ -63,6 +90,10 @@ APP_ORIGIN=https://your-site.example
 ```
 
 AnythingLLM must be reachable from the deployed backend. If AnythingLLM only runs on your laptop at `localhost:3001`, public users cannot use document chat until AnythingLLM is deployed or exposed securely.
+
+## Current Cloud Limits
+
+The Vercel cloud API provides auth, profile storage, chat storage, Gemini chat, and image generation. File upload currently returns a setup message until you connect a deployed document ingestion/vector service such as public AnythingLLM, Supabase Storage plus embeddings, or another RAG backend.
 
 ---
 

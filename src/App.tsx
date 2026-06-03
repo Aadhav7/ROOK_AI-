@@ -100,7 +100,7 @@ export default function RookAI() {
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
   const [referenceImageName, setReferenceImageName] = useState('');
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
-  const [status, setStatus] = useState('Connected through local backend');
+  const [status, setStatus] = useState('Connected to Rook AI cloud');
 
   const theme = {
     app: isDark ? 'bg-[#09090b] text-zinc-100' : 'bg-slate-50 text-slate-950',
@@ -186,7 +186,7 @@ export default function RookAI() {
           : `I could not reach the document brain: ${errorMessage}`,
         time: now(),
       }]);
-      setStatus('Backend or AnythingLLM is not reachable');
+      setStatus('Cloud chat is not reachable');
     } finally {
       setIsSending(false);
     }
@@ -540,7 +540,7 @@ function LoginScreen({
   const requestOtp = async (event: FormEvent) => {
     event.preventDefault();
     setIsLoading(true);
-    setMessage('Sending verification code...');
+    setMessage('Sending verification code through Supabase...');
 
     try {
       const response = await fetch(`${API_BASE_URL}/auth/request-otp`, {
@@ -570,7 +570,7 @@ function LoginScreen({
       const response = await fetch(`${API_BASE_URL}/auth/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, phone, channel, otp }),
+        body: JSON.stringify({ email, phone, channel, otp, profile }),
       });
       const data = await readApiResponse(response);
 
@@ -678,14 +678,6 @@ function LoginScreen({
               {isLoading && <Loader2 size={18} className="animate-spin" />}
               Send OTP
             </button>
-            <div className="grid grid-cols-2 gap-3">
-              <a className={cn("flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold", isDark ? "border-zinc-800 hover:bg-zinc-900" : "border-slate-200 hover:bg-slate-50")} href={`${API_BASE_URL}/auth/social/google`}>
-                <Globe2 size={16} /> Google
-              </a>
-              <a className={cn("flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold", isDark ? "border-zinc-800 hover:bg-zinc-900" : "border-slate-200 hover:bg-slate-50")} href={`${API_BASE_URL}/auth/social/github`}>
-                <BookOpen size={16} /> GitHub
-              </a>
-            </div>
           </form>
         ) : (
           <form onSubmit={verifyOtp} className="space-y-4">
