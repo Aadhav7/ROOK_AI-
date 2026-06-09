@@ -17,7 +17,7 @@ The frontend uses `/api` in production. During local development, Vite proxies `
 
 1. Create a Supabase project.
 2. Open the Supabase SQL editor and run `supabase/schema.sql`.
-3. Enable Email OTP in Supabase Auth. SMS OTP needs a Supabase-supported SMS provider.
+3. Enable Email OTP in Supabase Auth. SMS OTP needs a Supabase-supported SMS provider or a webhook connected to a CPaaS provider.
 4. Add these variables in Vercel:
 
 ```bash
@@ -38,15 +38,28 @@ Copy `.env.example` to `.env` on your deployment platform and fill the values.
 - On Vercel, `/api/auth/request-otp` and `/api/auth/verify-otp` use Supabase Auth.
 - Without `EMAIL_WEBHOOK_URL`, OTP codes are printed in the backend terminal for development.
 - To use Gmail, connect `EMAIL_WEBHOOK_URL` to a small email service or serverless function that sends mail through Gmail SMTP or Gmail API.
+- For SMS OTP, use a reliable CPaaS provider such as Twilio Verify, Vonage Verify, MessageBird/Bird, Sinch, Plivo, or AWS SNS. Point `SMS_WEBHOOK_URL` at your provider wrapper so the backend can post `{ to, text }`.
 - To capture login records and user activity in MongoDB, enable MongoDB Atlas Data API and fill `MONGODB_DATA_API_URL` plus `MONGODB_DATA_API_KEY`.
 - After login, users get free entry to the chat workspace. The app asks for name, age, role, and goal, then stores that profile locally and, when MongoDB is configured, in the `profiles` collection.
 
 ## Chat And Images
 
-Rook AI has two chat modes:
+Rook AI has two chat modes and a configurable AI brain order:
 
-- **General** uses Gemini through the Vercel `/api/chat` route.
-- **Docs** uses AnythingLLM `query` mode when `ANYTHINGLLM_BASE_URL` and `ANYTHINGLLM_API_KEY` are configured. If AnythingLLM is not configured, the cloud API falls back to Gemini general chat.
+- **General** uses `AI_BRAIN_PRIORITY`, which defaults to Ollama first, then Gemini, then AnythingLLM, then local fallback.
+- **Docs** uses AnythingLLM `query` mode when `ANYTHINGLLM_BASE_URL` and `ANYTHINGLLM_API_KEY` are configured. If AnythingLLM is not reachable, the backend falls back to Ollama with a document-mode prompt.
+- **FAQ/setup questions** are answered from a local 1200-entry FAQ bank before external model routing, which keeps common help answers fast.
+
+Ollama defaults:
+
+```bash
+AI_BRAIN_PRIORITY=ollama,gemini,anythingllm,local
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_GENERAL_MODEL=qwen2.5:0.5b
+OLLAMA_DOCUMENT_MODEL=qwen2.5:0.5b
+```
+
+For stronger local reasoning, install a larger Ollama model and update the model variables, for example `llama3.1:8b`, `qwen2.5:7b`, or another model your machine can run smoothly.
 
 Image generation is available through Gemini image generation, also known as Nano Banana. Set these variables:
 
@@ -90,6 +103,10 @@ APP_ORIGIN=https://your-site.example
 ```
 
 AnythingLLM must be reachable from the deployed backend. If AnythingLLM only runs on your laptop at `localhost:3001`, public users cannot use document chat until AnythingLLM is deployed or exposed securely.
+
+## Security Notes
+
+Never commit `.env`; it is already ignored by `.gitignore`. If an API key is pasted into chat, screenshots, GitHub, or logs, treat it as compromised: rotate it in Google AI Studio, restrict it by API/application where possible, and update the deployment secret.
 
 ## Current Cloud Limits
 

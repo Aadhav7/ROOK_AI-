@@ -45,3 +45,60 @@ html, body, #root {
 .bg-glow {
   background: radial-gradient(circle at center, rgba(79, 70, 229, 0.15) 0%, transparent 70%);
 }
+
+.rook-neural-loader {
+  position: relative;
+  width: 46px;
+  height: 46px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(34, 211, 238, 0.9) 0 3px, transparent 4px),
+    conic-gradient(from 0deg, rgba(99, 102, 241, 0.05), rgba(34, 211, 238, 0.9), rgba(217, 70, 239, 0.75), rgba(99, 102, 241, 0.05));
+  box-shadow: 0 0 32px rgba(34, 211, 238, 0.24);
+  animation: rook-neural-spin 1.6s linear infinite;
+}
+
+.rook-neural-loader::before,
+.rook-neural-loader::after,
+.rook-neural-loader span {
+  content: '';
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #e0f2fe;
+  box-shadow: 0 0 18px rgba(34, 211, 238, 0.8);
+}
+
+.rook-neural-loader::before {
+  left: 7px;
+  top: 10px;
+}
+
+.rook-neural-loader::after {
+  right: 8px;
+  bottom: 9px;
+}
+
+.rook-neural-loader span:nth-child(1) {
+  right: 8px;
+  top: 8px;
+}
+
+.rook-neural-loader span:nth-child(2) {
+  left: 10px;
+  bottom: 8px;
+}
+
+.rook-neural-loader span:nth-child(3) {
+  left: 21px;
+  top: 21px;
+  width: 5px;
+  height: 5px;
+}
+
+@keyframes rook-neural-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

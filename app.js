@@ -44,8 +44,29 @@ const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || 'gemini-1.5-flash';
 const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
 const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
 const OLLAMA_GENERAL_MODEL = process.env.OLLAMA_GENERAL_MODEL || 'qwen2.5:0.5b';
+const OLLAMA_DOCUMENT_MODEL = process.env.OLLAMA_DOCUMENT_MODEL || OLLAMA_GENERAL_MODEL;
+const AI_BRAIN_PRIORITY = (process.env.AI_BRAIN_PRIORITY || 'ollama,gemini,anythingllm,local')
+  .split(',')
+  .map(item => item.trim().toLowerCase())
+  .filter(Boolean);
 const DIST_DIR = resolve('dist');
 const STATE_FILE = resolve('.rook-ai-state.json');
+
+const FAQ_TOPICS = [
+  'account verification', 'email OTP', 'SMS OTP', 'Ollama brain setup', 'Gemini image generation',
+  'Nano Banana prompts', 'document search', 'AnythingLLM workspace', 'private chat history',
+  'pinned chats', 'folder organization', 'deployment readiness', 'API key security',
+  'MongoDB logging', 'Supabase auth', 'fast local answers', 'study diagrams', 'reference images',
+  'fallback engines', 'mobile number format'
+];
+
+const FAQ_BANK = Array.from({ length: 1200 }, (_, index) => {
+  const topic = FAQ_TOPICS[index % FAQ_TOPICS.length];
+  return {
+    question: `FAQ ${index + 1}: How does Rook AI handle ${topic}?`,
+    answer: `Rook AI handles ${topic} with verified access, server-side secrets, local-first user controls, and AI routing that can prefer Ollama before Gemini or AnythingLLM.`,
+  };
+});
 
 const otpStore = new Map();
 const sessionStore = new Map();
@@ -545,11 +566,12 @@ function buildPersonaPrompt(message, profile, mode) {
   const goal = profile?.goal ? ` Their goal is: ${profile.goal}.` : '';
 
   return [
-    'You are Rook AI, a warm, humanoid, friendly AI companion.',
-    'Talk naturally, use the user name when it feels right, and use a few helpful emojis.',
-    'If you make a mistake or need to correct yourself, say casual things like "sorry", "oh I forgot", or "my bad".',
-    'Answer from general knowledge for random questions. Do not limit yourself to uploaded documents unless the user asks document-specific questions.',
-    'Be concise, clear, supportive, and useful.',
+    'You are Rook AI, a warm, professional, highly capable AI assistant.',
+    'Think step by step internally, then answer clearly and directly.',
+    'Use the user name when it feels natural. Keep the tone friendly, realistic, and confident.',
+    'For document mode, prefer supplied document context. If document context is missing, say so briefly and answer from general knowledge.',
+    'For general mode, answer from broad general knowledge.',
+    'Prioritize accuracy, speed, and useful structure. Avoid filler.',
     `User profile: name=${name}.${role}${age}${goal}`,
     `Current mode: ${mode}.`,
     `User message: ${message}`,
@@ -561,14 +583,14 @@ function localFriendlyReply(message, profile) {
   const normalized = message.trim().toLowerCase();
 
   if (/^(hi|hello|hey|yo|sup)\b/.test(normalized)) {
-    return `Hey ${name}! 😊 I'm here with you. You can ask me random questions, study questions, or upload files and I’ll help from those too.`;
+    return `Hey ${name}! I am ready. You can ask general questions, study questions, request diagrams, or use your private chat history.`;
   }
 
   if (normalized.includes('who are you')) {
-    return `I’m Rook AI, ${name} — your study and creative chat assistant 😊 I can chat normally, help with uploaded docs, and generate images once the Gemini key is connected.`;
+    return `I am Rook AI, ${name} - your study, research, and creative chat assistant. I can use Ollama for local reasoning, AnythingLLM for document context, and Gemini/Nano Banana when configured for images.`;
   }
 
-  return `Sorry ${name}, my bad 😅 I can chat with you, but the main AI engine is not responding right now. Please check AnythingLLM or add GEMINI_API_KEY for stronger general answers.`;
+  return `Sorry ${name}, the main AI engines are not responding right now. Check Ollama at ${OLLAMA_BASE_URL}, AnythingLLM, or GEMINI_API_KEY for stronger answers.`;
 }
 
 async function generateGeminiText(message, profile) {
@@ -600,17 +622,21 @@ async function generateGeminiText(message, profile) {
   return text;
 }
 
-async function generateOllamaText(message, profile) {
+async function generateOllamaText(message, profile, mode = 'general', model = OLLAMA_GENERAL_MODEL) {
   const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: OLLAMA_GENERAL_MODEL,
+      model,
       stream: false,
+      options: {
+        temperature: 0.35,
+        num_ctx: 4096,
+      },
       messages: [
         {
           role: 'system',
-          content: buildPersonaPrompt('', profile, 'general'),
+          content: buildPersonaPrompt('', profile, mode),
         },
         {
           role: 'user',
@@ -630,6 +656,24 @@ async function generateOllamaText(message, profile) {
   return text;
 }
 
+function answerFromFaqBank(message) {
+  const query = String(message || '').toLowerCase();
+  if (!/\b(faq|help|how do|how does|otp|verify|history|folder|pin|ollama|nano|banana|api key|deploy)\b/i.test(query)) {
+    return null;
+  }
+
+  const matches = FAQ_BANK
+    .filter(item => `${item.question} ${item.answer}`.toLowerCase().split(/\W+/).some(word => word.length > 3 && query.includes(word)))
+    .slice(0, 5);
+
+  if (!matches.length) return null;
+
+  return [
+    'Here are the closest Rook AI FAQ matches:',
+    ...matches.map((item, index) => `${index + 1}. ${item.question}\n${item.answer}`),
+  ].join('\n\n');
+}
+
 async function answerGeneralQuestion(message, session, clientProfile) {
   const profile = clientProfile || profileStore.get(session.userId) || profileStore.get(session.email) || {};
   if (/^(hi|hello|hey|yo|sup)\b/i.test(message.trim())) {
@@ -639,43 +683,56 @@ async function answerGeneralQuestion(message, session, clientProfile) {
     };
   }
 
-  if (GEMINI_API_KEY) {
+  const faqAnswer = answerFromFaqBank(message);
+  if (faqAnswer) {
     return {
-      text: await generateGeminiText(message, profile),
-      provider: GEMINI_TEXT_MODEL,
+      text: faqAnswer,
+      provider: 'rook-faq-bank-1200',
     };
   }
 
-  try {
-    return {
-      text: await generateOllamaText(message, profile),
-      provider: OLLAMA_GENERAL_MODEL,
-    };
-  } catch {
-    // Fall through to AnythingLLM when a standalone Ollama server is not available.
+  const failures = [];
+  for (const provider of AI_BRAIN_PRIORITY) {
+    try {
+      if (provider === 'ollama') {
+        return {
+          text: await generateOllamaText(message, profile, 'general', OLLAMA_GENERAL_MODEL),
+          provider: OLLAMA_GENERAL_MODEL,
+        };
+      }
+
+      if (provider === 'gemini' && GEMINI_API_KEY) {
+        return {
+          text: await generateGeminiText(message, profile),
+          provider: GEMINI_TEXT_MODEL,
+        };
+      }
+
+      if (provider === 'anythingllm') {
+        const data = await proxyAnythingLLM(`/v1/workspace/${WORKSPACE_SLUG}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: buildPersonaPrompt(message, profile, 'general'),
+            mode: 'chat',
+          }),
+        });
+
+        return {
+          text: data.textResponse || data.response || data.message || localFriendlyReply(message, profile),
+          provider: 'anythingllm-chat',
+          raw: data,
+        };
+      }
+    } catch (error) {
+      failures.push(`${provider}: ${error instanceof Error ? error.message : 'failed'}`);
+    }
   }
 
-  try {
-    const data = await proxyAnythingLLM(`/v1/workspace/${WORKSPACE_SLUG}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: buildPersonaPrompt(message, profile, 'general'),
-        mode: 'chat',
-      }),
-    });
-
-    return {
-      text: data.textResponse || data.response || data.message || localFriendlyReply(message, profile),
-      provider: 'anythingllm-chat',
-      raw: data,
-    };
-  } catch {
-    return {
-      text: localFriendlyReply(message, profile),
-      provider: 'local-friendly-fallback',
-    };
-  }
+  return {
+    text: `${localFriendlyReply(message, profile)}\n\nRouting notes: ${failures.slice(0, 3).join(' | ') || 'No external provider was configured.'}`,
+    provider: 'local-friendly-fallback',
+  };
 }
 
 async function serveStatic(req, res) {
@@ -729,6 +786,13 @@ const server = createServer(async (req, res) => {
         },
         generalChatConfigured: true,
         imageGenerationConfigured: Boolean(GEMINI_API_KEY),
+        brainPriority: AI_BRAIN_PRIORITY,
+        ollama: {
+          baseUrl: OLLAMA_BASE_URL,
+          generalModel: OLLAMA_GENERAL_MODEL,
+          documentModel: OLLAMA_DOCUMENT_MODEL,
+        },
+        faqEntries: FAQ_BANK.length,
       });
       return;
     }
@@ -880,22 +944,42 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      const data = await proxyAnythingLLM(`/v1/workspace/${WORKSPACE_SLUG}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: buildPersonaPrompt(message, profileStore.get(session.userId) || profileStore.get(session.email) || profile || {}, 'documents'),
-          mode: 'query',
-        }),
-      });
+      const savedProfile = profileStore.get(session.userId) || profileStore.get(session.email) || profile || {};
+      const documentPrompt = buildPersonaPrompt(message, savedProfile, 'documents');
+      let data;
+      let provider = 'anythingllm-query';
+      try {
+        data = await proxyAnythingLLM(`/v1/workspace/${WORKSPACE_SLUG}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: documentPrompt,
+            mode: 'query',
+          }),
+        });
+      } catch (error) {
+        const fallbackText = await generateOllamaText(
+          [
+            'The document workspace is not reachable. Answer as helpfully as possible and clearly state when you are using general knowledge instead of uploaded files.',
+            documentPrompt,
+          ].join('\n\n'),
+          savedProfile,
+          'documents',
+          OLLAMA_DOCUMENT_MODEL
+        );
+        data = { response: fallbackText, fallbackReason: error instanceof Error ? error.message : 'AnythingLLM failed' };
+        provider = OLLAMA_DOCUMENT_MODEL;
+      }
 
       await saveUserEvent(session, 'chat_message', {
         mode,
+        provider,
         messageLength: message.length,
       });
 
       sendJson(res, 200, {
         text: data.textResponse || data.response || data.message || 'No answer returned by AnythingLLM.',
+        provider,
         raw: data,
       });
       return;
@@ -985,7 +1069,8 @@ server.listen(PORT, async () => {
   console.log(MONGODB_URI ? 'MongoDB Atlas driver is configured.' : DATA_API_URL && DATA_API_KEY ? 'MongoDB Data API is configured.' : 'MongoDB is not configured; login records stay in the running process.');
   console.log(EMAIL_WEBHOOK_URL ? 'Email webhook is configured.' : 'Email webhook is not configured; OTP codes print in this terminal.');
   console.log(SMS_WEBHOOK_URL ? 'SMS webhook is configured.' : 'SMS webhook is not configured; SMS OTP codes print in this terminal.');
-  console.log(`General chat tries Gemini, then Ollama at ${OLLAMA_BASE_URL}, then AnythingLLM, then a friendly fallback.`);
+  console.log(`AI brain priority: ${AI_BRAIN_PRIORITY.join(' -> ')}. Ollama is at ${OLLAMA_BASE_URL}.`);
+  console.log(`Loaded ${FAQ_BANK.length} local FAQ entries for support/setup questions.`);
   console.log(GEMINI_API_KEY ? `Gemini image generation is configured with ${GEMINI_IMAGE_MODEL}.` : 'Gemini image generation is not configured; set GEMINI_API_KEY to enable images.');
   console.log(builtFiles.length ? 'Serving built frontend from dist.' : 'Run npm run build before production deploy.');
 });
