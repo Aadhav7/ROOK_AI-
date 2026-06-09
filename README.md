@@ -31,6 +31,29 @@ GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
 
 Keep `SUPABASE_SERVICE_ROLE_KEY` server-side only. Do not expose it with a `VITE_` prefix.
 
+### Vercel Supabase Integration
+
+If you connected Supabase from the Vercel dashboard, Vercel can inject the Supabase variables automatically. The app accepts both direct names like `SUPABASE_URL`/`SUPABASE_ANON_KEY` and integration names like `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+
+Run these after installing or using the Vercel CLI:
+
+```bash
+npx vercel login
+npx vercel link
+npx vercel env pull .env.development.local
+```
+
+Or use the package scripts:
+
+```bash
+npm run vercel:link
+npm run vercel:env
+```
+
+The pulled `.env.development.local` file is ignored by git. For deployed OTP to work, confirm the Vercel project has `SUPABASE_URL`, `SUPABASE_ANON_KEY` or `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` in the Production environment, then redeploy.
+
+If your Supabase/Vercel integration uses newer key names, `SUPABASE_PUBLISHABLE_KEY` can replace `SUPABASE_ANON_KEY`, and `SUPABASE_SECRET_KEY` can replace `SUPABASE_SERVICE_ROLE_KEY`. Keep service-role/secret keys server-only; do not create `NEXT_PUBLIC_` versions of secret keys.
+
 ## OTP, Gmail, MongoDB, and Local Backend
 
 Copy `.env.example` to `.env` on your deployment platform and fill the values.
@@ -48,7 +71,7 @@ Rook AI has two chat modes and a configurable AI brain order:
 
 - **General** uses `AI_BRAIN_PRIORITY`, which defaults to Ollama first, then Gemini, then AnythingLLM, then local fallback.
 - **Docs** uses AnythingLLM `query` mode when `ANYTHINGLLM_BASE_URL` and `ANYTHINGLLM_API_KEY` are configured. If AnythingLLM is not reachable, the backend falls back to Ollama with a document-mode prompt.
-- **FAQ/setup questions** are answered from a local 1200-entry FAQ bank before external model routing, which keeps common help answers fast.
+- The sidebar is reserved for private chat search, chat history, folders, pins, and Nano Banana visual shortcuts.
 
 Ollama defaults:
 

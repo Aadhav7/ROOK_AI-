@@ -493,8 +493,9 @@ function buildStudyVisualPrompt(prompt, workspaceContext, profile) {
   const learner = profile?.role || 'student';
   return [
     'Create a clean syllabus-oriented educational visual for a learner.',
-    'Prefer diagrams, charts, architecture layers, timelines, flowcharts, mind maps, labeled examples, and study-friendly layouts when useful.',
-    'Use clear labels, high contrast, and concise text. Do not include fake URLs or markdown image placeholders.',
+    'Support images, graphs, charts, diagrams, maps, flowcharts, mind maps, timelines, architecture, infographics, labeled examples, and sample-image requests.',
+    'When exact data is missing, make a clearly illustrative sample with readable labels, legends, axes, hierarchy, and professional spacing.',
+    'Use high contrast and concise text. Do not include fake URLs or markdown image placeholders.',
     `Learner type: ${learner}.`,
     workspaceContext ? `Relevant syllabus/PPT/document context:\n${workspaceContext}` : 'No document context was available; use the user request directly.',
     `User request: ${prompt}`,
@@ -528,7 +529,7 @@ async function generateGeminiImage({ prompt, referenceImage }) {
       body: JSON.stringify({
         contents: [{ parts }],
         generationConfig: {
-          responseModalities: ['Image'],
+          responseModalities: ['TEXT', 'IMAGE'],
         },
       }),
     }

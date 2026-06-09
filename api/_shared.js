@@ -1,6 +1,34 @@
-const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+function normalizeSupabaseUrl(value = '') {
+  const trimmed = String(value).trim();
+  if (!trimmed) return '';
+  try {
+    const url = new URL(trimmed);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return trimmed.replace(/\/+(auth\/v1|rest\/v1|storage\/v1)?\/?$/i, '').replace(/\/$/, '');
+  }
+}
+
+function envValue(...names) {
+  for (const name of names) {
+    const value = String(process.env[name] || '').trim();
+    if (value && value !== '""' && value !== "''") return value;
+  }
+  return '';
+}
+
+const SUPABASE_URL = normalizeSupabaseUrl(
+  envValue('SUPABASE_URL', 'VITE_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL')
+);
+const SUPABASE_ANON_KEY = envValue(
+  'SUPABASE_ANON_KEY',
+  'SUPABASE_PUBLISHABLE_KEY',
+  'VITE_SUPABASE_ANON_KEY',
+  'VITE_SUPABASE_PUBLISHABLE_KEY',
+  'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+  'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY'
+);
+const SUPABASE_SERVICE_ROLE_KEY = envValue('SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEY');
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || 'gemini-1.5-flash';
 const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
@@ -41,6 +69,18 @@ export async function readJsonBody(req) {
   return {};
 }
 
+export function normalizeContact(channel, value = '') {
+  const contact = String(value || '').trim();
+  return channel === 'sms'
+    ? contact.replace(/[^\d+]/g, '')
+    : contact.toLowerCase();
+}
+
+export function isValidContact(channel, value = '') {
+  if (channel === 'sms') return /^\+[1-9]\d{7,14}$/.test(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
 export function supabaseHeaders({ service = false, token = '' } = {}) {
   const key = service ? SUPABASE_SERVICE_ROLE_KEY : SUPABASE_ANON_KEY;
   return {
@@ -52,7 +92,7 @@ export function supabaseHeaders({ service = false, token = '' } = {}) {
 
 export function assertSupabaseConfigured({ service = false } = {}) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    throw new Error('Supabase is not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY in Vercel.');
+    throw new Error('Supabase is not configured. Add SUPABASE_URL/SUPABASE_ANON_KEY or use the Vercel Supabase integration variables.');
   }
   if (service && !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error('Supabase service role key is missing. Add SUPABASE_SERVICE_ROLE_KEY in Vercel for database writes.');

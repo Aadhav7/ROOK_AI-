@@ -2,7 +2,7 @@ import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } 
 import {
   Send, Bot, User, Moon, Sun, Plus, LogOut, Sparkles, Paperclip, Palette, Loader2,
   Mail, ShieldCheck, Image as ImageIcon, Wand2, Globe2, BookOpen, BadgeCheck, Phone,
-  X, Pin, PinOff, FolderPlus, MessageSquare, Trash2, Search, Shield, Library
+  X, Pin, PinOff, FolderPlus, MessageSquare, Trash2, Search, Shield
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -48,22 +48,14 @@ type ChatSession = {
   messages: Message[];
 };
 
-const FAQ_TOPICS = [
-  'account verification', 'email OTP', 'SMS OTP', 'Ollama brain setup', 'Gemini image generation',
-  'Nano Banana prompts', 'document search', 'AnythingLLM workspace', 'private chat history',
-  'pinned chats', 'folder organization', 'deployment readiness', 'API key security',
-  'MongoDB logging', 'Supabase auth', 'fast local answers', 'study diagrams', 'reference images',
-  'fallback engines', 'mobile number format'
+const VISUAL_TOOLS = [
+  { label: 'Image', prompt: '/image Generate a polished sample image of ' },
+  { label: 'Diagram', prompt: '/diagram Draw a labeled diagram explaining ' },
+  { label: 'Chart', prompt: '/chart Create a clean chart with readable labels for ' },
+  { label: 'Graph', prompt: '/graph Plot a professional graph showing ' },
+  { label: 'Map', prompt: '/map Draw a clear map-style visual of ' },
+  { label: 'Flow', prompt: '/flowchart Create a flowchart for ' },
 ];
-
-const FAQ_BANK = Array.from({ length: 1200 }, (_, index) => {
-  const topic = FAQ_TOPICS[index % FAQ_TOPICS.length];
-  return {
-    id: index + 1,
-    question: `FAQ ${index + 1}: How does Rook AI handle ${topic}?`,
-    answer: `Rook AI handles ${topic} through verified access, local-first UI state, and a backend route that prefers the configured AI engine while keeping secrets on the server.`,
-  };
-});
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -163,12 +155,6 @@ export default function RookAI() {
   const isVerified = Boolean(user && profile);
   const isBusy = isSending || isGeneratingImage;
 
-  const filteredFaq = useMemo(() => {
-    const q = input.trim().toLowerCase();
-    if (!q || q.length < 2) return FAQ_BANK.slice(0, 6);
-    return FAQ_BANK.filter(item => `${item.question} ${item.answer}`.toLowerCase().includes(q)).slice(0, 8);
-  }, [input]);
-
   const visibleSessions = useMemo(() => {
     const q = historySearch.trim().toLowerCase();
     return chatSessions
@@ -177,19 +163,23 @@ export default function RookAI() {
   }, [chatSessions, historySearch]);
 
   useEffect(() => {
-    setChatSessions(prev => {
-      const nextSession: ChatSession = {
-        id: currentChatId,
-        title: deriveTitle(messages),
-        folder: prev.find(session => session.id === currentChatId)?.folder || 'Study',
-        pinned: prev.find(session => session.id === currentChatId)?.pinned || false,
-        updatedAt: Date.now(),
-        messages,
-      };
-      const next = [nextSession, ...prev.filter(session => session.id !== currentChatId)].slice(0, 80);
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-      return next;
-    });
+    const syncId = window.setTimeout(() => {
+      setChatSessions(prev => {
+        const nextSession: ChatSession = {
+          id: currentChatId,
+          title: deriveTitle(messages),
+          folder: prev.find(session => session.id === currentChatId)?.folder || 'Study',
+          pinned: prev.find(session => session.id === currentChatId)?.pinned || false,
+          updatedAt: Date.now(),
+          messages,
+        };
+        const next = [nextSession, ...prev.filter(session => session.id !== currentChatId)].slice(0, 80);
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+        return next;
+      });
+    }, 0);
+
+    return () => window.clearTimeout(syncId);
   }, [currentChatId, messages]);
 
   useEffect(() => {
@@ -259,10 +249,10 @@ export default function RookAI() {
     setInput('');
     setMessages(prev => [...prev, { role: 'user', content: question, time: now() }]);
 
-    const imagePrompt = question.replace(/^\/(image|chart|graph|diagram|visual|draw|sketch|flowchart|mindmap)\s*/i, '').trim();
-    const wantsImage = /^\/(image|chart|graph|diagram|visual|draw|sketch|flowchart|mindmap)\b/i.test(question)
-      || /\b(draw|sketch|design|generate|create|make|visualize|plot|map)\b.*\b(image|chart|graph|diagram|visual|infographic|architecture|flowchart|mind\s*map|timeline|table|layers?|tiers?|cycle|process|model)\b/i.test(question)
-      || /\b(chart|graph|diagram|infographic|architecture|flowchart|mind\s*map|timeline|layers?|tiers?)\b.*\b(about|for|of|showing|example|structure|model)\b/i.test(question);
+    const imagePrompt = question.replace(/^\/(image|chart|graph|diagram|visual|draw|sketch|flowchart|mindmap|map|timeline|infographic)\s*/i, '').trim();
+    const wantsImage = /^\/(image|chart|graph|diagram|visual|draw|sketch|flowchart|mindmap|map|timeline|infographic)\b/i.test(question)
+      || /\b(draw|sketch|design|generate|create|make|visualize|plot|map|render)\b.*\b(image|sample image|chart|graph|diagram|visual|infographic|architecture|flowchart|mind\s*map|timeline|table|map|layers?|tiers?|cycle|process|model)\b/i.test(question)
+      || /\b(chart|graph|diagram|infographic|architecture|flowchart|mind\s*map|timeline|map|sample images?|labeled examples?|layers?|tiers?)\b.*\b(about|for|of|showing|example|structure|model|route|region|comparison)\b/i.test(question);
     if (wantsImage && imagePrompt) {
       await generateImageFromPrompt(imagePrompt);
       return;
@@ -451,19 +441,23 @@ export default function RookAI() {
             </div>
           ))}
 
-          <p className={cn("flex items-center gap-2 px-2 pt-3 text-[10px] font-bold uppercase tracking-widest", theme.muted)}>
-            <Library size={12}/> FAQ Knowledge Base
-          </p>
-          {filteredFaq.map(item => (
-            <button
-              key={item.id}
-              className={cn("w-full rounded-xl border p-3 text-left transition", isDark ? "border-zinc-800 bg-zinc-950/40 hover:bg-zinc-900" : "border-slate-200 bg-white hover:bg-slate-50")}
-              onClick={() => setInput(item.question)}
-            >
-              <span className="block text-xs font-semibold">{item.question}</span>
-              <span className={cn("mt-1 line-clamp-2 block text-[11px]", theme.muted)}>{item.answer}</span>
-            </button>
-          ))}
+          <div className={cn("mt-4 rounded-xl border p-3", isDark ? "border-zinc-800 bg-zinc-950/50" : "border-slate-200 bg-white")}>
+            <p className={cn("mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest", theme.muted)}>
+              <Wand2 size={12}/> Nano Banana visuals
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {VISUAL_TOOLS.map(tool => (
+                <button
+                  key={tool.label}
+                  type="button"
+                  className={cn("rounded-lg border px-2 py-2 text-left text-xs font-semibold transition", isDark ? "border-zinc-800 bg-zinc-900 hover:border-indigo-500/60" : "border-slate-200 bg-slate-50 hover:border-indigo-300")}
+                  onClick={() => setInput(prev => prev.trim() ? prev : tool.prompt)}
+                >
+                  {tool.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         <div className={cn("mt-4 border-t pt-4 space-y-1", isDark ? "border-zinc-800" : "border-slate-200")}>
@@ -538,7 +532,7 @@ export default function RookAI() {
               </ToolbarButton>
               <input
                 className="min-w-0 bg-transparent px-2 text-[15px] outline-none"
-                placeholder={chatMode === 'documents' ? 'Ask about files, key points, charts, or images...' : 'Ask anything, or start with /image...'}
+                placeholder={chatMode === 'documents' ? 'Ask about files, diagrams, charts, maps, or images...' : 'Ask anything, or start with /image, /chart, /diagram, or /map...'}
                 value={input}
                 onChange={event => setInput(event.target.value)}
                 onFocus={() => { if (!isVerified) setIsAuthOpen(true); }}
@@ -555,7 +549,7 @@ export default function RookAI() {
             </div>
           </form>
           <p className={cn("mt-4 flex items-center justify-center gap-2 text-center text-[10px] uppercase tracking-widest opacity-70", theme.muted)}>
-            {referenceImageName ? `Reference image attached: ${referenceImageName}` : `Private local history active. ${FAQ_BANK.length}+ FAQ entries indexed.`}
+            {referenceImageName ? `Reference image attached: ${referenceImageName}` : 'Private local history active. Nano Banana can generate images, charts, graphs, diagrams, maps, and samples.'}
           </p>
         </div>
       </main>
@@ -602,7 +596,7 @@ function LoginScreen({
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
   const [step, setStep] = useState<'contact' | 'otp'>('contact');
-  const [message, setMessage] = useState('Verify by email or mobile. Development OTPs print in the backend terminal until a real provider webhook is configured.');
+  const [message, setMessage] = useState('Verify with email or SMS to unlock private history, uploads, chat, and visual generation.');
   const [isLoading, setIsLoading] = useState(false);
 
   const requestOtp = async (event: FormEvent) => {
@@ -620,7 +614,7 @@ function LoginScreen({
       if (!response.ok) throw new Error(data.error || 'Could not send verification code.');
 
       setStep('otp');
-      setMessage(data.devOtp ? `Development OTP: ${data.devOtp}` : data.message);
+      setMessage(data.message || 'Verification code sent.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not send verification code.');
     } finally {

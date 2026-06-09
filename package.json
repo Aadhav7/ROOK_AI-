@@ -9,7 +9,9 @@
     "start": "node app.js",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "vercel:link": "vercel link",
+    "vercel:env": "vercel env pull .env.development.local"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.2.4",

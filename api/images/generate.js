@@ -36,7 +36,10 @@ export default async function handler(req, res) {
     const parts = [
       {
         text: [
-          'Create a clean, useful AI-generated visual for this Rook AI chat user.',
+          'Create a polished, useful AI-generated visual for this Rook AI chat user.',
+          'Support image, graph, chart, diagram, map, flowchart, mind map, timeline, architecture, infographic, labeled example, and sample-image requests.',
+          'When the user asks for data visuals, render readable labels, legends, axes, and hierarchy. When exact data is missing, make a clearly illustrative sample.',
+          'Keep the output professional, high contrast, cleanly composed, and easy to study.',
           profile.role ? `User role: ${profile.role}.` : '',
           `Prompt: ${prompt}`,
         ].filter(Boolean).join('\n'),
@@ -56,7 +59,7 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           contents: [{ parts }],
-          generationConfig: { responseModalities: ['Image'] },
+          generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
         }),
       }
     );
@@ -84,7 +87,7 @@ export default async function handler(req, res) {
 
     sendJson(res, 200, {
       imageUrl,
-      text: 'Image generated successfully.',
+      text: 'Visual generated successfully.',
       model: config.GEMINI_IMAGE_MODEL,
     });
   } catch (error) {
