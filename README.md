@@ -24,6 +24,7 @@ The frontend uses `/api` in production. During local development, Vite proxies `
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+PUBLIC_APP_URL=https://rook-ai-omega.vercel.app
 GEMINI_API_KEY=your-google-ai-api-key
 GEMINI_TEXT_MODEL=gemini-1.5-flash
 GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
@@ -50,7 +51,7 @@ npm run vercel:link
 npm run vercel:env
 ```
 
-The pulled `.env.development.local` file is ignored by git. For deployed OTP to work, confirm the Vercel project has `SUPABASE_URL`, `SUPABASE_ANON_KEY` or `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` in the Production environment, then redeploy.
+The pulled `.env.development.local` file is ignored by git. For deployed OTP to work, confirm the Vercel project has `SUPABASE_URL`, `SUPABASE_ANON_KEY` or `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and `PUBLIC_APP_URL=https://rook-ai-omega.vercel.app` in the Production environment, then redeploy.
 
 If your Supabase/Vercel integration uses newer key names, `SUPABASE_PUBLISHABLE_KEY` can replace `SUPABASE_ANON_KEY`, and `SUPABASE_SECRET_KEY` can replace `SUPABASE_SERVICE_ROLE_KEY`. Keep service-role/secret keys server-only; do not create `NEXT_PUBLIC_` versions of secret keys.
 
@@ -59,6 +60,8 @@ If your Supabase/Vercel integration uses newer key names, `SUPABASE_PUBLISHABLE_
 Copy `.env.example` to `.env` on your deployment platform and fill the values.
 
 - On Vercel, `/api/auth/request-otp` and `/api/auth/verify-otp` use Supabase Auth.
+- In Supabase Auth email settings, set the sender/display name to `Rook_Ai` and update the email OTP template to show `{{ .Token }}` as the 6-digit code. If the template still uses `{{ .ConfirmationURL }}`, users will receive a magic link instead of a code; the app now accepts that link too, but the email will still look like a Supabase sign-in link until the template is changed.
+- In Supabase Auth URL configuration, set the site URL to `https://rook-ai-omega.vercel.app` and add that same URL to redirect allow-list entries.
 - Without `EMAIL_WEBHOOK_URL`, OTP codes are printed in the backend terminal for development.
 - To use Gmail, connect `EMAIL_WEBHOOK_URL` to a small email service or serverless function that sends mail through Gmail SMTP or Gmail API.
 - For SMS OTP, use a reliable CPaaS provider such as Twilio Verify, Vonage Verify, MessageBird/Bird, Sinch, Plivo, or AWS SNS. Point `SMS_WEBHOOK_URL` at your provider wrapper so the backend can post `{ to, text }`.

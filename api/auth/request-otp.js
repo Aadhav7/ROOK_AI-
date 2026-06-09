@@ -1,4 +1,4 @@
-import { isValidContact, normalizeContact, readJsonBody, requireMethod, sendJson, supabaseFetch } from '../_shared.js';
+import { getPublicAppUrl, isValidContact, normalizeContact, readJsonBody, requireMethod, sendJson, supabaseFetch } from '../_shared.js';
 
 export default async function handler(req, res) {
   if (!requireMethod(req, res, 'POST')) return;
@@ -19,12 +19,14 @@ export default async function handler(req, res) {
     const payload = authChannel === 'sms'
       ? { phone: contact, data: { profile } }
       : { email: contact, data: { profile } };
+    const emailRedirectTo = authChannel === 'email' ? getPublicAppUrl(req) : '';
 
     await supabaseFetch('/auth/v1/otp', {
       method: 'POST',
       body: JSON.stringify({
         ...payload,
         create_user: true,
+        ...(emailRedirectTo ? { email_redirect_to: emailRedirectTo } : {}),
       }),
     });
 

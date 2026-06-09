@@ -35,6 +35,7 @@ const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-i
 const ANYTHINGLLM_BASE_URL = (process.env.ANYTHINGLLM_BASE_URL || '').replace(/\/$/, '');
 const ANYTHINGLLM_API_KEY = process.env.ANYTHINGLLM_API_KEY || '';
 const WORKSPACE_SLUG = process.env.ANYTHINGLLM_WORKSPACE_SLUG || 'my-workspace';
+const PUBLIC_APP_URL = envValue('PUBLIC_APP_URL', 'VITE_PUBLIC_APP_URL', 'NEXT_PUBLIC_SITE_URL');
 
 export const config = {
   SUPABASE_URL,
@@ -46,6 +47,7 @@ export const config = {
   ANYTHINGLLM_BASE_URL,
   ANYTHINGLLM_API_KEY,
   WORKSPACE_SLUG,
+  PUBLIC_APP_URL,
 };
 
 export function sendJson(res, statusCode, payload) {
@@ -71,14 +73,35 @@ export async function readJsonBody(req) {
 
 export function normalizeContact(channel, value = '') {
   const contact = String(value || '').trim();
-  return channel === 'sms'
-    ? contact.replace(/[^\d+]/g, '')
-    : contact.toLowerCase();
+  if (channel !== 'sms') return contact.toLowerCase();
+
+  let phone = contact.replace(/[^\d+]/g, '');
+  if (phone.startsWith('00')) phone = `+${phone.slice(2)}`;
+  if (!phone.startsWith('+')) {
+    const localDigits = phone.replace(/\D/g, '');
+    if (/^0?7\d{8}$/.test(localDigits)) {
+      phone = `+94${localDigits.replace(/^0/, '')}`;
+    } else {
+      phone = `+${localDigits}`;
+    }
+  }
+  return phone;
 }
 
 export function isValidContact(channel, value = '') {
-  if (channel === 'sms') return /^\+[1-9]\d{7,14}$/.test(value);
+  if (channel === 'sms') {
+    const phone = normalizeContact('sms', value);
+    return /^\+[1-9]\d{7,14}$/.test(phone) && (!phone.startsWith('+94') || /^\+947\d{8}$/.test(phone));
+  }
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+export function getPublicAppUrl(req) {
+  const configured = PUBLIC_APP_URL.replace(/\/$/, '');
+  if (configured) return configured;
+  const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+  const proto = req.headers['x-forwarded-proto'] || (host.includes('localhost') ? 'http' : 'https');
+  return host ? `${proto}://${host}` : '';
 }
 
 export function supabaseHeaders({ service = false, token = '' } = {}) {

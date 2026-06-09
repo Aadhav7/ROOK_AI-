@@ -11,6 +11,8 @@ const API_BASE_URL = import.meta.env.VITE_ROOK_API_URL || '/api';
 const TOKEN_KEY = 'rook_ai_token';
 const CONTACT_KEY = 'rook_ai_contact';
 const PROFILE_KEY = 'rook_ai_profile';
+const PENDING_PROFILE_KEY = 'rook_ai_pending_profile';
+const PENDING_CONTACT_KEY = 'rook_ai_pending_contact';
 const HISTORY_KEY = 'rook_ai_private_history';
 const FOLDERS_KEY = 'rook_ai_private_folders';
 
@@ -101,6 +103,17 @@ function deriveTitle(messages: Message[]) {
   return firstUser ? firstUser.slice(0, 42) : 'Private chat';
 }
 
+function normalizeSriLankaPhone(value: string) {
+  const trimmed = value.trim();
+  let phone = trimmed.replace(/[^\d+]/g, '');
+  if (phone.startsWith('00')) phone = `+${phone.slice(2)}`;
+  if (!phone.startsWith('+')) {
+    const digits = phone.replace(/\D/g, '');
+    phone = /^0?7\d{8}$/.test(digits) ? `+94${digits.replace(/^0/, '')}` : `+${digits}`;
+  }
+  return phone;
+}
+
 async function readApiResponse(response: Response) {
   const text = await response.text();
   if (!text) return {};
@@ -185,6 +198,47 @@ export default function RookAI() {
   useEffect(() => {
     localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
   }, [folders]);
+
+  useEffect(() => {
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const accessToken = hashParams.get('access_token');
+    if (!accessToken) return;
+
+    const pendingProfile = parseStoredProfile(localStorage.getItem(PENDING_PROFILE_KEY));
+    const pendingContact = localStorage.getItem(PENDING_CONTACT_KEY) || '';
+
+    (async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/auth/me`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const data = await readApiResponse(response);
+        if (!response.ok) throw new Error(data.error || 'Could not finish email verification.');
+
+        const nextProfile = data.profile || pendingProfile || {
+          name: data.user?.email?.split('@')[0] || 'Rook AI user',
+          age: '',
+          role: 'Student',
+          goal: '',
+        };
+        const session = { ...data.user, token: accessToken } as UserSession;
+        localStorage.setItem(TOKEN_KEY, accessToken);
+        localStorage.setItem(CONTACT_KEY, data.user?.email || data.user?.phone || pendingContact || data.user?.userId || '');
+        localStorage.setItem(PROFILE_KEY, JSON.stringify(nextProfile));
+        localStorage.removeItem(PENDING_PROFILE_KEY);
+        localStorage.removeItem(PENDING_CONTACT_KEY);
+        setUser(session);
+        setProfile(nextProfile);
+        setIsAuthOpen(false);
+        setMessages([{ role: 'assistant', content: `Hey ${nextProfile.name}! You are verified now. Your private history, pins, folders, and AI tools are ready.`, time: now() }]);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : 'Email verification failed');
+        setIsAuthOpen(true);
+      } finally {
+        window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
+      }
+    })();
+  }, []);
 
   const readReferenceImage = (file: File) => {
     const reader = new FileReader();
@@ -602,18 +656,23 @@ function LoginScreen({
   const requestOtp = async (event: FormEvent) => {
     event.preventDefault();
     setIsLoading(true);
+    const normalizedPhone = channel === 'sms' ? normalizeSriLankaPhone(phone) : phone.trim().toLowerCase();
     setMessage(channel === 'sms' ? 'Sending verification code through the SMS gateway...' : 'Sending verification code through email...');
+    localStorage.setItem(PENDING_PROFILE_KEY, JSON.stringify(profile));
+    localStorage.setItem(PENDING_CONTACT_KEY, normalizedPhone);
 
     try {
       const response = await fetch(`${API_BASE_URL}/auth/request-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, phone, channel, profile }),
+        body: JSON.stringify({ email: email.trim().toLowerCase(), phone: normalizedPhone, channel, profile }),
       });
       const data = await readApiResponse(response);
       if (!response.ok) throw new Error(data.error || 'Could not send verification code.');
 
       setStep('otp');
+      if (channel === 'sms' && data.contact) setPhone(data.contact);
+      if (channel === 'email' && data.contact) setEmail(data.contact);
       setMessage(data.message || 'Verification code sent.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not send verification code.');
@@ -625,17 +684,20 @@ function LoginScreen({
   const verifyOtp = async (event: FormEvent) => {
     event.preventDefault();
     setIsLoading(true);
+    const normalizedPhone = channel === 'sms' ? normalizeSriLankaPhone(phone) : phone.trim().toLowerCase();
     setMessage('Verifying code...');
 
     try {
       const response = await fetch(`${API_BASE_URL}/auth/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, phone, channel, otp, profile }),
+        body: JSON.stringify({ email: email.trim().toLowerCase(), phone: normalizedPhone, channel, otp, profile }),
       });
       const data = await readApiResponse(response);
       if (!response.ok) throw new Error(data.error || 'Verification failed.');
 
+      localStorage.removeItem(PENDING_PROFILE_KEY);
+      localStorage.removeItem(PENDING_CONTACT_KEY);
       onVerified({ ...data.user, token: data.token }, data.profile || profile);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Verification failed.');
