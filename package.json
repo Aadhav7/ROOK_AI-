@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "vercel:link": "vercel link",
-    "vercel:env": "vercel env pull .env.development.local"
+    "vercel:env": "vercel env pull .env.development.local",
+    "vercel:deploy": "vercel --prod"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.2.4",

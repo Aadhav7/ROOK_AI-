@@ -56,7 +56,7 @@ const FAQ_TOPICS = [
   'account verification', 'email OTP', 'SMS OTP', 'Ollama brain setup', 'Gemini image generation',
   'Nano Banana prompts', 'document search', 'AnythingLLM workspace', 'private chat history',
   'pinned chats', 'folder organization', 'deployment readiness', 'API key security',
-  'MongoDB logging', 'Supabase auth', 'fast local answers', 'study diagrams', 'reference images',
+  'MongoDB logging', 'Rook OTP auth', 'fast local answers', 'study diagrams', 'reference images',
   'fallback engines', 'mobile number format'
 ];
 

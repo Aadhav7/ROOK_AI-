@@ -1,13 +1,4 @@
-function normalizeSupabaseUrl(value = '') {
-  const trimmed = String(value).trim();
-  if (!trimmed) return '';
-  try {
-    const url = new URL(trimmed);
-    return `${url.protocol}//${url.host}`;
-  } catch {
-    return trimmed.replace(/\/+(auth\/v1|rest\/v1|storage\/v1)?\/?$/i, '').replace(/\/$/, '');
-  }
-}
+import { createHash, createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 
 function envValue(...names) {
   for (const name of names) {
@@ -17,38 +8,50 @@ function envValue(...names) {
   return '';
 }
 
-const SUPABASE_URL = normalizeSupabaseUrl(
-  envValue('SUPABASE_URL', 'VITE_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL')
-);
-const SUPABASE_ANON_KEY = envValue(
-  'SUPABASE_ANON_KEY',
-  'SUPABASE_PUBLISHABLE_KEY',
-  'VITE_SUPABASE_ANON_KEY',
-  'VITE_SUPABASE_PUBLISHABLE_KEY',
-  'NEXT_PUBLIC_SUPABASE_ANON_KEY',
-  'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY'
-);
-const SUPABASE_SERVICE_ROLE_KEY = envValue('SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEY');
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || 'gemini-1.5-flash';
 const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
 const ANYTHINGLLM_BASE_URL = (process.env.ANYTHINGLLM_BASE_URL || '').replace(/\/$/, '');
 const ANYTHINGLLM_API_KEY = process.env.ANYTHINGLLM_API_KEY || '';
 const WORKSPACE_SLUG = process.env.ANYTHINGLLM_WORKSPACE_SLUG || 'my-workspace';
-const PUBLIC_APP_URL = envValue('PUBLIC_APP_URL', 'VITE_PUBLIC_APP_URL', 'NEXT_PUBLIC_SITE_URL');
+const EMAIL_WEBHOOK_URL = process.env.EMAIL_WEBHOOK_URL || '';
+const SMS_WEBHOOK_URL = process.env.SMS_WEBHOOK_URL || '';
+const MONGODB_URI = process.env.MONGODB_URI || '';
+const DATA_API_URL = process.env.MONGODB_DATA_API_URL || '';
+const DATA_API_KEY = process.env.MONGODB_DATA_API_KEY || '';
+const DATA_SOURCE = process.env.MONGODB_DATA_SOURCE || 'Cluster0';
+const DATABASE = process.env.MONGODB_DATABASE || 'rook_ai';
+const USERS_COLLECTION = process.env.MONGODB_USERS_COLLECTION || 'users';
+const PROFILES_COLLECTION = process.env.MONGODB_PROFILES_COLLECTION || 'profiles';
+const OTP_COLLECTION = process.env.MONGODB_OTP_COLLECTION || 'otp_events';
+const CHAT_COLLECTION = process.env.MONGODB_CHAT_COLLECTION || process.env.MONGODB_EVENTS_COLLECTION || 'user_events';
+const SESSION_SECRET = envValue('SESSION_SECRET', 'JWT_SECRET') || GEMINI_API_KEY || 'rook-ai-dev-session-secret';
+const IS_DEPLOYED = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
 
 export const config = {
-  SUPABASE_URL,
-  SUPABASE_ANON_KEY,
-  SUPABASE_SERVICE_ROLE_KEY,
   GEMINI_API_KEY,
   GEMINI_TEXT_MODEL,
   GEMINI_IMAGE_MODEL,
   ANYTHINGLLM_BASE_URL,
   ANYTHINGLLM_API_KEY,
   WORKSPACE_SLUG,
-  PUBLIC_APP_URL,
+  EMAIL_WEBHOOK_URL,
+  SMS_WEBHOOK_URL,
+  MONGODB_URI,
+  DATA_API_URL,
+  DATA_API_KEY,
 };
+
+const memoryStore = globalThis.__rookAiMemoryStore ||= {
+  otps: new Map(),
+  profiles: new Map(),
+  chats: [],
+};
+let mongoClientPromise;
+
+function hasDatabase() {
+  return Boolean(MONGODB_URI || (DATA_API_URL && DATA_API_KEY));
+}
 
 export function sendJson(res, statusCode, payload) {
   res.status(statusCode).json(payload);
@@ -96,110 +99,289 @@ export function isValidContact(channel, value = '') {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-export function getPublicAppUrl(req) {
-  const configured = PUBLIC_APP_URL.replace(/\/$/, '');
-  if (configured) return configured;
-  const host = req.headers['x-forwarded-host'] || req.headers.host || '';
-  const proto = req.headers['x-forwarded-proto'] || (host.includes('localhost') ? 'http' : 'https');
-  return host ? `${proto}://${host}` : '';
+function hash(value) {
+  return createHash('sha256').update(String(value)).digest('hex');
 }
 
-export function supabaseHeaders({ service = false, token = '' } = {}) {
-  const key = service ? SUPABASE_SERVICE_ROLE_KEY : SUPABASE_ANON_KEY;
+function otpKey(channel, contact) {
+  return `${channel}:${normalizeContact(channel, contact)}`;
+}
+
+function userIdFor(channel, contact) {
+  return hash(otpKey(channel, contact)).slice(0, 32);
+}
+
+function cleanProfile(profile = {}) {
   return {
-    apikey: key,
-    Authorization: token ? `Bearer ${token}` : `Bearer ${key}`,
-    'Content-Type': 'application/json',
+    name: String(profile.name || '').trim().slice(0, 80),
+    age: String(profile.age || '').trim().slice(0, 20),
+    role: String(profile.role || '').trim().slice(0, 80),
+    goal: String(profile.goal || '').trim().slice(0, 180),
   };
 }
 
-export function assertSupabaseConfigured({ service = false } = {}) {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    throw new Error('Supabase is not configured. Add SUPABASE_URL/SUPABASE_ANON_KEY or use the Vercel Supabase integration variables.');
-  }
-  if (service && !SUPABASE_SERVICE_ROLE_KEY) {
-    throw new Error('Supabase service role key is missing. Add SUPABASE_SERVICE_ROLE_KEY in Vercel for database writes.');
+function base64url(input) {
+  return Buffer.from(input).toString('base64url');
+}
+
+function signSession(payload) {
+  const encoded = base64url(JSON.stringify(payload));
+  const signature = createHmac('sha256', SESSION_SECRET).update(encoded).digest('base64url');
+  return `${encoded}.${signature}`;
+}
+
+function verifySessionToken(token) {
+  const [encoded, signature] = String(token || '').split('.');
+  if (!encoded || !signature) return null;
+
+  const expected = createHmac('sha256', SESSION_SECRET).update(encoded).digest('base64url');
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) return null;
+
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    if (!payload?.userId || Number(payload.expiresAt) < Date.now()) return null;
+    return payload;
+  } catch {
+    return null;
   }
 }
 
-export async function supabaseFetch(path, init = {}, { service = false, token = '' } = {}) {
-  assertSupabaseConfigured({ service });
-  const response = await fetch(`${SUPABASE_URL}${path}`, {
-    ...init,
-    headers: {
-      ...supabaseHeaders({ service, token }),
-      ...(init.headers || {}),
+async function mongoCollection(collection) {
+  if (!MONGODB_URI) return null;
+  const { MongoClient, ServerApiVersion } = await import('mongodb');
+  mongoClientPromise ||= new MongoClient(MONGODB_URI, {
+    serverApi: {
+      version: ServerApiVersion.v1,
+      strict: true,
+      deprecationErrors: true,
     },
+  }).connect();
+  const client = await mongoClientPromise;
+  return client.db(DATABASE).collection(collection);
+}
+
+async function dataApi(action, collection, payload) {
+  if (!DATA_API_URL || !DATA_API_KEY) return null;
+  const response = await fetch(`${DATA_API_URL.replace(/\/$/, '')}/action/${action}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api-key': DATA_API_KEY,
+    },
+    body: JSON.stringify({
+      dataSource: DATA_SOURCE,
+      database: DATABASE,
+      collection,
+      ...payload,
+    }),
   });
+
   const text = await response.text();
-  let data = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = { message: text };
-  }
-  if (!response.ok) {
-    throw new Error(data.error_description || data.msg || data.message || `Supabase returned ${response.status}`);
-  }
+  const data = text ? JSON.parse(text) : {};
+  if (!response.ok) throw new Error(data.error || data.message || `MongoDB Data API failed: ${response.status}`);
   return data;
+}
+
+async function dbFindOne(collectionName, filter) {
+  const collection = await mongoCollection(collectionName);
+  if (collection) return collection.findOne(filter);
+
+  const data = await dataApi('findOne', collectionName, { filter });
+  return data?.document || null;
+}
+
+async function dbInsertOne(collectionName, document) {
+  const collection = await mongoCollection(collectionName);
+  if (collection) return collection.insertOne(document);
+
+  return dataApi('insertOne', collectionName, { document });
+}
+
+async function dbUpsertOne(collectionName, filter, document) {
+  const collection = await mongoCollection(collectionName);
+  if (collection) return collection.updateOne(filter, { $set: document }, { upsert: true });
+
+  return dataApi('updateOne', collectionName, {
+    filter,
+    update: { $set: document },
+    upsert: true,
+  });
+}
+
+async function sendOtpEmail(email, otp) {
+  if (!EMAIL_WEBHOOK_URL) {
+    if (IS_DEPLOYED) throw new Error('Email OTP is not configured. Add EMAIL_WEBHOOK_URL in Vercel.');
+    return;
+  }
+  const response = await fetch(EMAIL_WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      to: email,
+      subject: 'Your Rook AI verification code',
+      text: `Your Rook AI verification code is ${otp}. It expires in 10 minutes.`,
+    }),
+  });
+  if (!response.ok) throw new Error(`Email webhook returned ${response.status}`);
+}
+
+async function sendOtpSms(phone, otp) {
+  if (!SMS_WEBHOOK_URL) {
+    if (IS_DEPLOYED) throw new Error('SMS OTP is not configured. Add SMS_WEBHOOK_URL in Vercel.');
+    return;
+  }
+  const response = await fetch(SMS_WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      to: phone,
+      text: `Your Rook AI verification code is ${otp}. It expires in 10 minutes.`,
+    }),
+  });
+  if (!response.ok) throw new Error(`SMS webhook returned ${response.status}`);
+}
+
+export async function createOtp({ channel, contact, profile }) {
+  const otp = String(randomInt(100000, 999999));
+  const key = otpKey(channel, contact);
+  const record = {
+    key,
+    channel,
+    contact,
+    otpHash: hash(otp),
+    attempts: 0,
+    profile: cleanProfile(profile),
+    expiresAt: Date.now() + 10 * 60 * 1000,
+    createdAt: new Date().toISOString(),
+  };
+
+  if (IS_DEPLOYED && !hasDatabase()) {
+    throw new Error('OTP storage is not configured. Add MONGODB_URI or MongoDB Data API variables in Vercel.');
+  }
+
+  if (hasDatabase()) {
+    await dbUpsertOne(OTP_COLLECTION, { key }, record);
+  } else {
+    memoryStore.otps.set(key, record);
+  }
+
+  if (channel === 'sms') await sendOtpSms(contact, otp);
+  else await sendOtpEmail(contact, otp);
+
+  return {
+    contact,
+    devOtp: (channel === 'sms' ? SMS_WEBHOOK_URL : EMAIL_WEBHOOK_URL) ? undefined : otp,
+    message: channel === 'sms'
+      ? 'Verification code sent to your mobile number.'
+      : 'Verification code sent to your email.',
+  };
+}
+
+export async function verifyOtp({ channel, contact, otp, profile }) {
+  const key = otpKey(channel, contact);
+  let record;
+
+  if (hasDatabase()) {
+    record = await dbFindOne(OTP_COLLECTION, { key });
+  } else {
+    record = memoryStore.otps.get(key);
+  }
+
+  if (!record) throw new Error('No verification code was found. Request a new one.');
+  if (Number(record.expiresAt) < Date.now()) {
+    if (!hasDatabase()) memoryStore.otps.delete(key);
+    throw new Error('The verification code expired. Request a new one.');
+  }
+  if (Number(record.attempts || 0) >= 5) throw new Error('Too many attempts. Request a new verification code.');
+  if (record.otpHash !== hash(String(otp || '').trim())) {
+    const attempts = Number(record.attempts || 0) + 1;
+    if (hasDatabase()) {
+      await dbUpsertOne(OTP_COLLECTION, { key }, { ...record, attempts });
+    } else {
+      memoryStore.otps.set(key, { ...record, attempts });
+    }
+    throw new Error('Incorrect verification code.');
+  }
+
+  if (!hasDatabase()) memoryStore.otps.delete(key);
+
+  const userId = userIdFor(channel, contact);
+  const savedProfile = await upsertProfile(userId, profile || record.profile || {});
+  const user = {
+    id: userId,
+    userId,
+    email: channel === 'email' ? contact : undefined,
+    phone: channel === 'sms' ? contact : undefined,
+    authChannel: channel,
+  };
+  const token = signSession({ ...user, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 });
+
+  await dbInsertOne(USERS_COLLECTION, {
+    ...user,
+    provider: `${channel}-otp`,
+    verifiedAt: new Date().toISOString(),
+  }).catch(() => null);
+
+  return { token, user, profile: savedProfile };
 }
 
 export async function getSessionUser(req) {
   const token = getBearerToken(req);
-  if (!token) return null;
-  const user = await supabaseFetch('/auth/v1/user', { method: 'GET' }, { token });
-  return { token, user };
+  const user = verifySessionToken(token);
+  return user ? { token, user } : null;
 }
 
 export async function requireSession(req, res) {
   const session = await getSessionUser(req);
   if (!session?.user?.id) {
-    sendJson(res, 401, { error: 'Please sign in before using Rook AI.' });
+    sendJson(res, 401, { error: 'Please verify your email or mobile number before using Rook AI.' });
     return null;
   }
   return session;
 }
 
 export async function upsertProfile(userId, profile = {}) {
-  assertSupabaseConfigured({ service: true });
-  const cleanProfile = {
+  const document = {
     id: userId,
-    name: String(profile.name || '').trim().slice(0, 80),
-    age: String(profile.age || '').trim().slice(0, 20),
-    role: String(profile.role || '').trim().slice(0, 80),
-    goal: String(profile.goal || '').trim().slice(0, 180),
-    updated_at: new Date().toISOString(),
+    userId,
+    ...cleanProfile(profile),
+    updatedAt: new Date().toISOString(),
   };
-  await supabaseFetch('/rest/v1/profiles?on_conflict=id', {
-    method: 'POST',
-    headers: { Prefer: 'resolution=merge-duplicates' },
-    body: JSON.stringify(cleanProfile),
-  }, { service: true });
-  return cleanProfile;
+
+  if (hasDatabase()) {
+    await dbUpsertOne(PROFILES_COLLECTION, { userId }, document);
+  } else {
+    memoryStore.profiles.set(userId, document);
+  }
+  return cleanProfile(document);
 }
 
 export async function getProfile(userId) {
-  assertSupabaseConfigured({ service: true });
-  const rows = await supabaseFetch(`/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}&select=*`, {
-    method: 'GET',
-  }, { service: true });
-  return rows[0] || null;
+  if (hasDatabase()) {
+    return dbFindOne(PROFILES_COLLECTION, { userId });
+  }
+  return memoryStore.profiles.get(userId) || null;
 }
 
 export async function saveChatMessage({ userId, role, mode, content, provider, imageUrl }) {
-  if (!SUPABASE_SERVICE_ROLE_KEY) return;
-  await supabaseFetch('/rest/v1/chat_messages', {
-    method: 'POST',
-    body: JSON.stringify({
-      user_id: userId,
-      role,
-      mode,
-      content,
-      provider,
-      image_url: imageUrl,
-      created_at: new Date().toISOString(),
-    }),
-  }, { service: true });
+  const document = {
+    userId,
+    type: 'chat_message',
+    role,
+    mode,
+    content,
+    provider,
+    imageUrl,
+    createdAt: new Date().toISOString(),
+  };
+
+  if (hasDatabase()) {
+    await dbInsertOne(CHAT_COLLECTION, document).catch(() => null);
+  } else {
+    memoryStore.chats.push(document);
+  }
 }
 
 export function buildPersonaPrompt(message, profile = {}, mode = 'general') {

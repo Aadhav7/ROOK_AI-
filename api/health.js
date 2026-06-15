@@ -5,9 +5,10 @@ export default function handler(req, res) {
   sendJson(res, 200, {
     ok: true,
     runtime: 'vercel-serverless',
-    auth: 'supabase-otp',
-    supabaseConfigured: Boolean(config.SUPABASE_URL && config.SUPABASE_ANON_KEY),
-    databaseWritesConfigured: Boolean(config.SUPABASE_SERVICE_ROLE_KEY),
+    auth: 'rook-otp',
+    emailOtpConfigured: Boolean(config.EMAIL_WEBHOOK_URL),
+    smsOtpConfigured: Boolean(config.SMS_WEBHOOK_URL),
+    databaseConfigured: Boolean(config.MONGODB_URI || (config.DATA_API_URL && config.DATA_API_KEY)),
     generalChatConfigured: Boolean(config.GEMINI_API_KEY),
     imageGenerationConfigured: Boolean(config.GEMINI_API_KEY),
     documentChatConfigured: Boolean(config.ANYTHINGLLM_BASE_URL && config.ANYTHINGLLM_API_KEY),

@@ -1,4 +1,4 @@
-import { isValidContact, normalizeContact, readJsonBody, requireMethod, sendJson, supabaseFetch, upsertProfile } from '../_shared.js';
+import { isValidContact, normalizeContact, readJsonBody, requireMethod, sendJson, verifyOtp } from '../_shared.js';
 
 export default async function handler(req, res) {
   if (!requireMethod(req, res, 'POST')) return;
@@ -21,33 +21,8 @@ export default async function handler(req, res) {
       return;
     }
 
-    const payload = authChannel === 'sms'
-      ? { phone: contact, token, type: 'sms' }
-      : { email: contact, token, type: 'email' };
-
-    const data = await supabaseFetch('/auth/v1/verify', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    const user = data.user;
-    const sessionToken = data.access_token || data.session?.access_token;
-    const savedProfile = user?.id ? await upsertProfile(user.id, profile).catch(() => profile) : profile;
-
-    if (!sessionToken || !user?.id) {
-      sendJson(res, 502, { error: 'Supabase verified the code but did not return a session. Check Auth OTP settings.' });
-      return;
-    }
-
-    sendJson(res, 200, {
-      token: sessionToken,
-      user: {
-        userId: user?.id,
-        email: user?.email || (authChannel === 'email' ? contact : undefined),
-        phone: user?.phone || (authChannel === 'sms' ? contact : undefined),
-        authChannel,
-      },
-      profile: savedProfile,
-    });
+    const result = await verifyOtp({ channel: authChannel, contact, otp: token, profile });
+    sendJson(res, 200, result);
   } catch (error) {
     sendJson(res, 500, { error: error instanceof Error ? error.message : 'Verification failed.' });
   }

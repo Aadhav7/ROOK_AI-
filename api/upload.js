@@ -7,6 +7,6 @@ export default async function handler(req, res) {
   if (!session) return;
 
   sendJson(res, 501, {
-    error: 'Cloud uploads need a deployed document store/vector service. Chat is ready now; connect AnythingLLM or Supabase Storage ingestion before enabling uploads.',
+    error: 'Cloud uploads need a deployed document store/vector service. Chat is ready now; connect AnythingLLM or another ingestion service before enabling uploads.',
   });
 }

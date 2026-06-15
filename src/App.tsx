@@ -204,40 +204,9 @@ export default function RookAI() {
     const accessToken = hashParams.get('access_token');
     if (!accessToken) return;
 
-    const pendingProfile = parseStoredProfile(localStorage.getItem(PENDING_PROFILE_KEY));
-    const pendingContact = localStorage.getItem(PENDING_CONTACT_KEY) || '';
-
-    (async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/auth/me`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await readApiResponse(response);
-        if (!response.ok) throw new Error(data.error || 'Could not finish email verification.');
-
-        const nextProfile = data.profile || pendingProfile || {
-          name: data.user?.email?.split('@')[0] || 'Rook AI user',
-          age: '',
-          role: 'Student',
-          goal: '',
-        };
-        const session = { ...data.user, token: accessToken } as UserSession;
-        localStorage.setItem(TOKEN_KEY, accessToken);
-        localStorage.setItem(CONTACT_KEY, data.user?.email || data.user?.phone || pendingContact || data.user?.userId || '');
-        localStorage.setItem(PROFILE_KEY, JSON.stringify(nextProfile));
-        localStorage.removeItem(PENDING_PROFILE_KEY);
-        localStorage.removeItem(PENDING_CONTACT_KEY);
-        setUser(session);
-        setProfile(nextProfile);
-        setIsAuthOpen(false);
-        setMessages([{ role: 'assistant', content: `Hey ${nextProfile.name}! You are verified now. Your private history, pins, folders, and AI tools are ready.`, time: now() }]);
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : 'Email verification failed');
-        setIsAuthOpen(true);
-      } finally {
-        window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
-      }
-    })();
+    setStatus('That sign-in link is from the old verification system. Request a fresh 6-digit Rook AI code.');
+    setIsAuthOpen(true);
+    window.history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
   }, []);
 
   const readReferenceImage = (file: File) => {
